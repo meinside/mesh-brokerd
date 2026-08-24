@@ -1,0 +1,12 @@
+{
+  "source": "protocol capture spike (docs/runbook.md §2), 2026-08-16",
+  "purpose": "confirms DMs are out of scope — NOT a decode target. DMs are PKC-encrypted; brokerd never attempts to decrypt this.",
+  "topic_observed": "msh/KR/2/e/PKI/!11223344",
+  "channel_id_field": "PKI",
+  "gateway_id_field": "!11223344",
+  "to_node": "0x55667788",
+  "from_node": "0x11223344",
+  "pki_encrypted_field_17": 1,
+  "finding": "Direct messages use a reserved channel_id literal \"PKI\" in both the topic and ServiceEnvelope.channel_id — never matches any real configured channel name — and MeshPacket field 17 (pki_encrypted) is set to 1. Either signal alone is sufficient for brokerd to classify the row as decode_status=pki_encrypted without attempting decryption.",
+  "anonymization_note": "node numbers replaced with obviously-fake values before publication; the finding concerns the reserved \"PKI\" channel_id literal and field 17, neither of which depends on any node number."
+}

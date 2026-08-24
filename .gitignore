@@ -1,0 +1,52 @@
+# macOS
+.DS_Store
+
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+go.work
+go.work.sum
+
+# local data / database
+*.db
+*.sqlite
+*.sqlite3
+/data/
+
+# PlatformIO (for building custom firmwares)
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# secrets
+.env
+.env.*
+!.env.sample
+config.json
+!config.json.sample
+deploy/**/passwd
+deploy/**/aclfile
+!deploy/**/passwd.sample
+!deploy/**/aclfile.sample
+
+# editor
+.vscode/
+.idea/
+
+# Re-include the storage package.
+#
+# A global ignore file (`core.excludesFile`, commonly `~/.gitignore`) with a
+# bare `storage/` pattern -- a common entry, aimed at framework or asset
+# storage directories -- silently excludes `internal/storage/` here. That is
+# how this repository's first commit came to be missing its entire storage
+# package while `make check` passed: every gate ran against the working tree,
+# where the files are present, and nothing looked at what was actually
+# committed. `make check-commit` now does.
+#
+# Git cannot re-include a file whose parent directory is excluded, so the
+# directory itself has to be un-excluded first.
+!internal/storage/
+!internal/storage/**

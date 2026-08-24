@@ -1,0 +1,98 @@
+[Unit]
+# mesh-brokerd: the unified MQTT broker + storage + monitoring
+# process (docs/architecture.md section 3), referred to as `brokerd`
+# throughout the documentation. Registered with systemd per
+# docs/architecture.md section 8's auto-restart mitigation -- brokerd is
+# the system's single point of failure and messages lost during an
+# outage cannot be recovered afterwards (section 7), so unsupervised
+# operation is not acceptable for real use.
+#
+# THIS IS A TEMPLATE -- it will not start as-is. Replace both
+# placeholders before installing (see docs/deployment.md):
+#
+#   /path/to/mesh-brokerd       the repository checkout
+#                                     (holds the built binary only)
+#   /path/to/mesh-brokerd-data  the data directory
+#                                     (config.json, .env, SQLite db,
+#                                     TLS cache)
+#
+# .env lives with the data, not in the checkout: the checkout is disposable
+# -- it can be re-cloned, moved, or built elsewhere -- and a unit that reads
+# secrets out of it breaks when that happens. Keeping them together also
+# means one directory to back up and one to lock down (mode 600 on .env,
+# 700 on the directory).
+#
+# TRADE-OFF, stated because it is not obvious: .env now sits inside
+# ReadWritePaths= below, so the service can write its own secrets file.
+# That is tampering-with-persistence, not disclosure -- the process already
+# holds every value in its environment -- but it is a change from when .env
+# lived in the read-only checkout. Nesting a ReadOnlyPaths= for the file
+# inside ReadWritePaths= does NOT restore this: verified on systemd 259,
+# where ReadWritePaths= wins in either declaration order. Nor does making
+# the file root-owned, since write access to the directory permits unlink
+# and replace. Move .env to a sibling directory outside ReadWritePaths= if
+# this matters for a given deployment.
+#
+# Keep them distinct: ReadWritePaths= below grants write access to the
+# data directory only, so collapsing the two would hand the service write
+# access to its own source tree as well.
+#
+# `systemd-analyze verify` on this file reports the ExecStart binary as
+# missing. That is expected for the un-substituted template, not a
+# defect.
+#
+# Also review User=/Group= below: they are set to `ubuntu` and must match
+# whoever owns the checkout and the data directory.
+Description=mesh-brokerd (MQTT broker + storage + monitoring)
+Documentation=https://github.com/meinside/mesh-brokerd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+
+WorkingDirectory=/path/to/mesh-brokerd
+ExecStart=/path/to/mesh-brokerd/bin/mesh-brokerd -config /path/to/mesh-brokerd-data/config.json
+
+# Secrets (channel PSK, bcrypt password hashes, DNS API token) come from
+# the environment, never from config.json (docs/security.md section 7).
+# NOTE: values in this file are single-quoted specifically because bcrypt
+# hashes contain '$' characters -- see the caveat in docs/deployment.md.
+EnvironmentFile=/path/to/mesh-brokerd-data/.env
+
+# The monitoring listener binds 127.0.0.1 only (see config.json's
+# monitoring.listen_addr) and is exposed through nginx + Cloudflare
+# instead of directly (deploy/nginx/, docs/monitoring-api.md). Because no
+# privileged port is bound, this service needs no capabilities at all.
+CapabilityBoundingSet=
+
+# docs/architecture.md section 8: automatic recovery.
+Restart=always
+RestartSec=5
+
+# ADR-6: SIGTERM triggers graceful shutdown (stop accepting connections,
+# drain the storage queue up to a bounded timeout, exit). Give it room to
+# finish draining before systemd escalates to SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Hardening: brokerd only needs to write its own data directory (the
+# directory holding storage.path, its SQLite -wal/-shm files, and
+# listener.tls_cache_dir).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/path/to/mesh-brokerd-data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

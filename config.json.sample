@@ -1,0 +1,189 @@
+{
+  "listener": {
+    "mqtt_addr": ":8883",
+    "tls_cert_domains": [
+      "<broker.example.com>"
+    ],
+    "tls_dns_provider": "cloudflare",
+    "tls_cache_dir": "</path/to/tls-cache>",
+    "tls_use_staging_ca": false,
+    "keepalive_floor_seconds": 0
+  },
+  "boards": [
+    {
+      "id": "alpha",
+      "username": "alpha",
+      "password_hash_env": "BROKERD_BOARD_ALPHA_PASSWORD_HASH",
+      "acl_filters": [
+        "msh/pvt/2/e/#",
+        "msh/pvt/2/map/"
+      ],
+      "node_id": "!01234567"
+    },
+    {
+      "id": "bravo",
+      "username": "bravo",
+      "password_hash_env": "BROKERD_BOARD_BRAVO_PASSWORD_HASH",
+      "acl_filters": [
+        "msh/pvt/2/e/#",
+        "msh/pvt/2/map/"
+      ],
+      "node_id": "!76543210"
+    }
+  ],
+  "channels": [
+    {
+      "name": "PrvtChn",
+      "psk_env": "BROKERD_CHANNEL_PRVTCHN_PSK"
+    }
+  ],
+  "retention": {
+    "raw_frames_days": 30,
+    "decoded_days": 30
+  },
+  "auth": {
+    "bcrypt_cost": 12,
+    "failure_threshold": 5,
+    "ban_duration_minutes": 30,
+    "ip_allowlist": []
+  },
+  "monitoring": {
+    "listen_addr": "127.0.0.1:9101",
+    "api_token_env": "BROKERD_MONITORING_TOKEN"
+  },
+  "storage": {
+    "path": "</path/to/brokerd.db>"
+  },
+  "outbound_relay": {
+    "enabled": false,
+    "targets": [
+      {
+        "id": "meshtastic-public",
+        "address": "mqtt.meshtastic.org:8883",
+        "tls_enabled": true,
+        "root_topic": "msh/<REGION>",
+        "channel_name": "LongFast",
+        "psk": "default",
+        "username": "meshdev",
+        "password_env": "BROKERD_RELAY_PUBLIC_PASSWORD"
+      }
+    ],
+    "rules": [
+      {
+        "id": "coarse-position",
+        "enabled": false,
+        "source_portnum": "POSITION_APP",
+        "target": "meshtastic-public",
+        "origin_scope": "own_boards_only",
+        "boards": [
+          "alpha",
+          "bravo"
+        ],
+        "identity": "real",
+        "eligibility": {
+          "min_precision_bits": 10,
+          "max_precision_bits": 16
+        }
+      },
+      {
+        "id": "own-nodeinfo",
+        "enabled": false,
+        "source_portnum": "NODEINFO_APP",
+        "target": "meshtastic-public",
+        "origin_scope": "own_boards_only",
+        "boards": [
+          "alpha",
+          "bravo"
+        ],
+        "identity": "real"
+      },
+      {
+        "id": "own-mapreport",
+        "enabled": true,
+        "source_portnum": "MAP_REPORT_APP",
+        "target": "meshtastic-public",
+        "origin_scope": "own_boards_only",
+        "boards": [
+          "alpha",
+          "bravo"
+        ],
+        "identity": "real"
+      }
+    ],
+    "dry_run_all_rules": true
+  },
+  "event_hooks": {
+    "enabled": false,
+    "dry_run": true,
+    "queue_size": 256,
+    "max_concurrent": 2,
+    "targets": [
+      {
+        "name": "phone-push",
+        "kind": "webhook",
+        "enabled": false,
+        "url_env": "BROKERD_HOOK_PHONE_URL",
+        "secret_env": "BROKERD_HOOK_PHONE_SECRET",
+        "timeout_seconds": 10,
+        "retries": 2,
+        "quiet_hours": "23:00-07:00",
+        "min_interval_seconds": 60,
+        "dedupe_window_seconds": 300,
+        "template": "{{or .FromName .FromID}} on {{.BoardID}}: {{index .Fields \"text\"}}",
+        "match": {
+          "events": [
+            "frame"
+          ],
+          "portnums": [
+            "TEXT_MESSAGE_APP"
+          ],
+          "channels": [
+            "prvtchn"
+          ],
+          "include_text": true,
+          "exclude_own_boards": true
+        }
+      },
+      {
+        "name": "chat-room",
+        "kind": "webhook",
+        "enabled": false,
+        "url_env": "BROKERD_HOOK_CHAT_URL",
+        "allow_unsigned": true,
+        "headers": {
+          "Accept": "application/vnd.example-chat-v2+json"
+        },
+        "timeout_seconds": 10,
+        "retries": 2,
+        "min_interval_seconds": 5,
+        "template": "{\"body\": {{json (printf \"[%s] %s\" (or .FromName .FromID) (index .Fields \"text\"))}}, \"connectInfo\": [{\"title\": \"node\", \"description\": {{json .FromID}}}, {\"title\": \"via\", \"description\": {{json .BoardID}}}, {\"title\": \"received (UTC)\", \"description\": {{json .ReceivedAt}}}]}",
+        "match": {
+          "events": [
+            "frame"
+          ],
+          "portnums": [
+            "TEXT_MESSAGE_APP"
+          ],
+          "include_text": true
+        }
+      },
+      {
+        "name": "board-offline-script",
+        "kind": "command",
+        "enabled": false,
+        "command": "/path/to/mesh-brokerd-data/hooks/notify.sh",
+        "args": [
+          "--source",
+          "brokerd"
+        ],
+        "timeout_seconds": 10,
+        "match": {
+          "events": [
+            "board_connected",
+            "board_disconnected"
+          ]
+        }
+      }
+    ]
+  }
+}

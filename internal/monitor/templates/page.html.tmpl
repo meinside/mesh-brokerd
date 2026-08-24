@@ -1,0 +1,175 @@
+{{/*
+brokerd's monitoring page. Server-rendered, no JavaScript, no external
+requests: the page must work over an SSH tunnel or a tailnet with no
+internet route, and a monitoring page that needs a CDN is one more thing
+that can be down when you are trying to find out what is down.
+
+Auto-refresh is a meta refresh for the same reason.
+*/}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="{{.RefreshSeconds}}">
+<title>brokerd — {{.Hostname}}</title>
+<style>
+:root { color-scheme: light dark; }
+body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 1rem; }
+h1 { font-size: 1.2rem; margin: 0 0 .25rem; }
+h2 { font-size: 1rem; margin: 1.5rem 0 .5rem; border-bottom: 1px solid currentColor; padding-bottom: .2rem; }
+.meta { opacity: .7; font-size: .85rem; }
+table { border-collapse: collapse; width: 100%; margin: .25rem 0; }
+th, td { text-align: left; padding: .3rem .5rem; border-bottom: 1px solid rgba(128,128,128,.3); vertical-align: top; }
+th { font-weight: 600; opacity: .8; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.ok { color: #197a2b; } .warn { color: #a05a00; } .bad { color: #a01818; }
+.none { opacity: .6; font-style: italic; }
+code, .mono { font-family: ui-monospace, monospace; font-size: .9em; }
+footer { margin-top: 2rem; }
+</style>
+</head>
+<body>
+
+<h1>mesh-brokerd</h1>
+<p class="meta">{{.Hostname}} · rendered {{.Now}} · refreshes every {{.RefreshSeconds}}s</p>
+
+<h2>Boards</h2>
+<table>
+<p class="meta">Notes and every counter on this page cover the last {{.SinceStart}} — brokerd's
+in-memory counters start at zero on each restart. Stored data is not affected.</p>
+<tr><th>Board</th><th>Traffic</th><th>MQTT session</th><th>Last frame</th><th>Quiet for</th><th class="num">Frames</th><th>Notes</th></tr>
+{{range .Boards}}
+<tr>
+  <td class="mono">{{.ID}}</td>
+  <td class="{{if eq .Status "online"}}ok{{else}}warn{{end}}">{{.Status}}</td>
+  <td class="{{if eq .Session "connected"}}ok{{else if eq .Session "absent"}}bad{{else}}none{{end}}">{{.Session}}</td>
+  <td>{{if .LastSeen}}{{.LastSeen}}{{else}}<span class="none">never</span>{{end}}</td>
+  <td>{{if .Quiet}}{{.Quiet}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td class="num">{{.Frames}}</td>
+  <td>
+    {{/* Since this process started, not ever: boards do not reconnect at the
+         same moment after a restart, so whichever comes back second is absent
+         for the other's first few frames. */}}
+    {{- if .DownlinkMissed}}<span class="warn">missed {{.DownlinkMissed}} downlink frame(s) while absent</span>{{end}}
+    {{- if .NodeIDMismatch}} <span class="warn">node_id mismatch</span>{{end}}
+  </td>
+</tr>
+{{else}}
+<tr><td colspan="7" class="none">no boards configured</td></tr>
+{{end}}
+</table>
+
+<h2>Traffic</h2>
+<table>
+<tr><th>Kind</th><th class="num">Frames</th></tr>
+{{range .Portnums}}<tr><td class="mono">{{.Kind}}</td><td class="num">{{.Count}}</td></tr>
+{{else}}<tr><td colspan="2" class="none">nothing stored yet</td></tr>
+{{end}}
+</table>
+
+<p class="meta">Showing the most recent {{len .RecentFrames}} of {{.FrameTotal}} stored frames
+{{- if lt (len .RecentFrames) .FrameTotal64}} (add <code>?frames={{.NextFrameLimit}}</code> to the URL for more){{end}}.</p>
+<table>
+<tr><th>Arrived (UTC)</th><th>Via</th><th>Kind</th><th>From</th><th>Name</th><th class="num">SNR</th><th class="num">Hops</th><th>Status</th></tr>
+{{range .RecentFrames}}
+<tr>
+  <td>{{.ReceivedAt}}</td>
+  <td class="mono">{{.BoardID}}</td>
+  <td class="mono">{{if .Portnum}}{{.Portnum}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td class="mono">{{.FromNode}}</td>
+  {{/* A node is named only if it has broadcast a NODEINFO frame; an unnamed
+       node shows a dash rather than repeating its id as a name. */}}
+  <td>{{if .FromName}}{{.FromName}}{{else}}<span class="none">—</span>{{end}}</td>
+  {{/* An absent measurement renders as a dash, never as 0: a frame the
+       gateway generated itself states no SNR at all (ADR-15). */}}
+  <td class="num">{{if .HasSNR}}{{printf "%.1f" .SNR}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td class="num">{{if .HasHops}}{{.Hops}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td class="{{if eq .Status "decoded"}}ok{{else}}warn{{end}}">{{.Status}}</td>
+</tr>
+{{else}}
+<tr><td colspan="8" class="none">no frames stored yet</td></tr>
+{{end}}
+</table>
+
+<h2>Nodes</h2>
+<p class="meta">What each node currently calls itself, from its NODEINFO frames.
+Retention does not delete this, so a node that has gone quiet is still named here.</p>
+<table>
+<tr><th>Node</th><th>Long name</th><th>Short</th><th>Last heard (UTC)</th></tr>
+{{range .Nodes}}
+<tr>
+  <td class="mono">{{.NodeID}}</td>
+  <td>{{if .LongName}}{{.LongName}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td class="mono">{{if .ShortName}}{{.ShortName}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td>{{.LastSeen}}</td>
+</tr>
+{{else}}
+<tr><td colspan="4" class="none">no node has introduced itself yet</td></tr>
+{{end}}
+</table>
+
+<h2>Messages</h2>
+<p class="meta">Showing the most recent {{len .Messages}} of {{.MessageTotal}} stored messages
+{{- if lt (len .Messages) .MessageTotal64}} (add <code>?messages={{.NextMessageLimit}}</code> to the URL for more){{end}}.
+Re-deliveries of the same packet are excluded.</p>
+<table>
+<tr><th>Arrived (UTC)</th><th>Node stated (UTC)</th><th>Note</th><th>Channel</th><th>From</th><th>Name</th><th>Text</th></tr>
+{{range .Messages}}
+<tr>
+  <td>{{.ReceivedAt}}</td>
+  {{/* What the packet stated, kept apart from what we observed: a node that
+       stated no time shows a dash rather than borrowing our arrival time. */}}
+  <td>{{if .StatedAt}}{{.StatedAt}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td>{{if .Note}}{{.Note}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td class="mono">{{.Channel}}</td>
+  <td class="mono">{{.FromNode}}</td>
+  <td>{{if .FromName}}{{.FromName}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td>{{.Text}}</td>
+</tr>
+{{else}}
+<tr><td colspan="7" class="none">no messages stored</td></tr>
+{{end}}
+</table>
+
+<h2>Health</h2>
+<table>
+<tr><th>Counter</th><th class="num">Value</th></tr>
+<tr><td>storage queue drops</td><td class="num {{if .Health.QueueDrops}}bad{{end}}">{{.Health.QueueDrops}}</td></tr>
+<tr><td>auth failures</td><td class="num">{{.Health.AuthFailures}}</td></tr>
+<tr><td>active bans</td><td class="num">{{.Health.ActiveBans}}</td></tr>
+{{range .Health.Counters}}
+<tr><td>{{.Label}}</td><td class="num {{if .Warn}}warn{{end}}">{{.Value}}</td></tr>
+{{end}}
+</table>
+
+<h2>Outbound relay &amp; hooks</h2>
+<table>
+<tr><th>What</th><th class="num">Count</th></tr>
+{{range .Outbound}}<tr><td>{{.Label}}</td><td class="num">{{.Value}}</td></tr>
+{{else}}<tr><td colspan="2" class="none">neither an outbound relay rule nor an event hook target is configured</td></tr>
+{{end}}
+</table>
+{{if .DisabledHookTargets}}
+<p class="warn">Event hook targets disabled after repeated failures: <span class="mono">{{.DisabledHookTargets}}</span> — re-enabled on restart.</p>
+{{end}}
+
+<h2>Telemetry</h2>
+{{if .Telemetry}}
+<table>
+<tr><th>Board / node</th><th>Recorded (UTC)</th><th>Details</th></tr>
+{{range .Telemetry}}<tr><td class="mono">{{.Source}}</td><td>{{.ReceivedAt}}</td><td class="mono">{{.Summary}}</td></tr>
+{{end}}
+</table>
+{{else}}
+<p class="none">No telemetry has arrived. Device metrics are broadcast on a
+node's primary channel, which these gateways deliberately never uplink, so
+this stays empty until that changes.</p>
+{{end}}
+
+<footer class="meta">
+Read-only. Authenticated via {{.AuthVia}}{{if .AuthLogin}} ({{.AuthLogin}}){{end}}.
+Nothing on this page can change brokerd's configuration.
+</footer>
+
+</body>
+</html>

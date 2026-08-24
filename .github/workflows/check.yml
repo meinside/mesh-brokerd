@@ -1,0 +1,67 @@
+name: check
+
+# `make check` (gofmt, go vet, golangci-lint, go test) is the quality gate
+# to pass for every change. This runs the same target CI-side so that
+# requirement is enforced rather than trusted.
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # Keep in step with go.mod's `go` directive.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify gofmt / go vet / go test
+        # CGO_ENABLED=1 is required: internal/storage uses
+        # mattn/go-sqlite3 (a cgo binding). ubuntu-latest already has a C
+        # toolchain, so no extra setup step is needed.
+        run: make fmt-check vet test
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          # Keep in step with the version used locally (`golangci-lint
+          # --version`). The action installs golangci-lint itself, so
+          # `make lint` is not reused here -- it would only shell out to a
+          # binary this step already provides.
+          version: v2.13.0
+          args: --timeout=5m
+
+  # Tests excluded from `make check` because they need a real network
+  # round trip (tls_e2e: ACME + a live DNS provider), a live brokerd
+  # database (diag), or physical boards and someone watching them
+  # (hardware). They cannot run in CI, so this job only type-checks them --
+  # enough to stop them rotting unnoticed, which is the realistic failure
+  # mode for tests nobody can run automatically. Every build tag used
+  # anywhere in the tree belongs in the list below.
+  tagged-tests-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Type-check tag-gated tests
+        # These run `go vet` directly rather than through the Makefile,
+        # so set CGO_ENABLED explicitly instead of relying on it
+        # defaulting to 1 (internal/storage needs cgo for
+        # mattn/go-sqlite3).
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go vet -tags tls_e2e ./...
+          go vet -tags diag ./...
+          go vet -tags hardware ./...

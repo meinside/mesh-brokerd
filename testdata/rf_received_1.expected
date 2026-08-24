@@ -1,0 +1,14 @@
+{
+  "source": "live capture, a gateway relaying a third node's private-channel text message",
+  "purpose": "ground truth for MeshPacket.rx_snr (field 8, float) -- the value the *gateway* measured, which no other layer carries",
+  "rx_snr": 6.0,
+  "rx_snr_cross_check": "the gateway's own serial console logged 'SNR 6 dB / Hops 0' for this packet in the same second, so 6.0 here is confirmed by a second, independent source -- not just by this project's decoder",
+  "rx_rssi_absent": "field 12 is not present at all, even though the gateway heard this packet over RF. An absent field must therefore be stored as NULL, never as 0 dBm (ADR-15)",
+  "hop_limit": 3,
+  "hop_start": 3,
+  "from_node": "0x11223344",
+  "gateway_id_field": "!11223344",
+  "relay_node": 68,
+  "anonymization_note": "gateway_id, channel_id, MeshPacket.from, MeshPacket.to and relay_node were overwritten in place with anonymised values of identical byte length; every other byte is the captured frame verbatim. The encrypted payload is consequently NOT decryptable (the nonce derives from from_node and packet id, and the channel name feeds the key lookup) -- this fixture is for envelope/packet field parsing only. channel_id was missed on the first pass and caught by the repository-wide audit, which is why that audit greps every tracked file rather than the diff.",
+  "channel_id_field": "pvtchannel"
+}

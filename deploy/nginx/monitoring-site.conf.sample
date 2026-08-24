@@ -1,0 +1,117 @@
+# brokerd's read-only monitoring API (docs/monitoring-api.md), fronted by
+# nginx and Cloudflare.
+#
+# THIS IS A TEMPLATE. Replace <MONITOR_HOSTNAME> with the hostname you
+# want the API served on, then install it where your nginx picks up site
+# configs, e.g.:
+#
+#   /etc/nginx/sites-enabled/<MONITOR_HOSTNAME>
+#   /etc/nginx/conf.d/<MONITOR_HOSTNAME>.conf
+#
+# Check which of those your nginx actually includes -- a config dropped
+# into a directory nginx does not read is silently ignored. If the include
+# pattern is `sites-enabled/*.*`, the filename must contain a dot.
+#
+# Shape, matching the reverse-proxy pattern this deployment already uses
+# for its other sites:
+#
+#   browser --HTTPS--> Cloudflare (proxied, terminates TLS)
+#           --HTTP---> nginx :80
+#           --HTTP---> 127.0.0.1:9101  (brokerd's monitoring listener)
+#
+# Two things make this acceptable despite the plaintext hops:
+#
+#   1. brokerd binds 127.0.0.1 only (config.json's
+#      monitoring.listen_addr), so the API is unreachable from the
+#      internet except through nginx. It also means brokerd binds no
+#      privileged port, so its systemd unit needs no capabilities.
+#   2. The nginx instance is restricted to Cloudflare's ranges, so the
+#      origin IP cannot be used to bypass Cloudflare. That matters here
+#      specifically because the MQTT hostname must stay DNS-only --
+#      Cloudflare's HTTP proxy cannot carry arbitrary TCP -- which
+#      publishes the origin IP in DNS. That restriction is server-wide
+#      nginx configuration, not part of this repository.
+#
+# Cloudflare side: this hostname must be PROXIED (orange cloud), unlike
+# the MQTT hostname, which must stay DNS-only. Proxy status is per-record,
+# so they have to be separate hostnames.
+#
+# The port below must match config.json's monitoring.listen_addr.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name <MONITOR_HOSTNAME>;
+
+    # The monitoring API is small, read-only, and GET-only; no need for
+    # large request bodies.
+    client_max_body_size 8k;
+
+    # Rate limiting: OFF by default here because `limit_req` needs a
+    # `limit_req_zone` declared in the http context, and referencing a zone
+    # that does not exist makes nginx fail to start. Uncomment only after
+    # confirming a zone exists (check with:
+    #   grep -rn limit_req_zone /etc/nginx/conf/nginx.conf
+    # a stock-ish nginx.conf often already has one).
+    #
+    # The zone may be declared *after* the include that pulls in this file
+    # -- zone resolution is not order-sensitive, so the zone's position in
+    # nginx.conf does not matter. Verified against nginx directly, both
+    # orderings.
+    #
+    #limit_req zone=<ZONE_NAME> burst=20 nodelay;
+    #
+    # Even with it off, this is not unprotected: restricting nginx to
+    # Cloudflare makes the edge the only way in, so edge rate limiting
+    # applies first, and brokerd's bearer-token check
+    # (docs/monitoring-api.md section 2) is the real gate. Note the
+    # monitoring API has no ban logic of its own -- internal/auth's banning
+    # is an MQTT hook, not an HTTP one -- so edge rate limiting is worth
+    # configuring.
+
+    # Two ways to authenticate callers, pick one:
+    #
+    # (a) Forward Authorization unchanged (the default below). A browser is
+    #     prompted by brokerd itself and sends the monitoring token as an
+    #     HTTP Basic password; a program sends a Bearer header. nginx needs
+    #     no secret of its own.
+    #
+    # (b) Inject the header here and authenticate users yourself:
+    #
+    #       proxy_set_header Authorization "Bearer <MONITORING_TOKEN>";
+    #       auth_basic "brokerd monitoring";
+    #       auth_basic_user_file /etc/nginx/monitoring.htpasswd;
+    #
+    #     With (b) the browser never learns brokerd's token -- but anyone who
+    #     gets past nginx is authenticated to brokerd, so nginx's own auth
+    #     becomes the only thing protecting message plaintext.
+    #
+    # Do not do both: an injected header would override what the browser
+    # sent, silently.
+    location / {
+        proxy_pass http://127.0.0.1:9101;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+
+        # Fail fast rather than hanging if brokerd is down: a stopped
+        # brokerd should look like an error, not a slow page.
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    15s;
+        proxy_send_timeout    15s;
+    }
+
+    # /health is unauthenticated by design (docs/monitoring-api.md
+    # section 1) and carries no sensitive information, so it stays
+    # reachable for external uptime checks -- but still only via
+    # Cloudflare.
+    location = /health {
+        proxy_pass http://127.0.0.1:9101/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        access_log off;
+    }
+}

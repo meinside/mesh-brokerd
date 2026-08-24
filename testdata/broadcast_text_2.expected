@@ -1,0 +1,17 @@
+{
+  "source": "protocol capture spike (docs/runbook.md §2), 2026-08-16",
+  "channel_name": "pvt-test-b",
+  "channel_hash": 24,
+  "packet_id": "0x526eb1b8",
+  "from_node": "0x11223344",
+  "to_node": "0xffffffff",
+  "hop_limit": 3,
+  "hop_start": 3,
+  "portnum": "TEXT_MESSAGE_APP",
+  "expected_plaintext_data_protobuf_hex": "0801120574657374214800",
+  "expected_text": "test!",
+  "nonce_hex": "b8b16e52000000004433221100000000",
+  "nonce_construction": "packet_id (4 bytes LE) + 4 zero bytes + from_node (4 bytes LE) + 4 zero bytes = 16 bytes total; AES-256-CTR",
+  "psk_note": "PSK deliberately excluded and never recorded anywhere. The capture channel was a throwaway channel, since deleted, so this ciphertext is PERMANENTLY UNDECRYPTABLE. Tests therefore assert only what needs no key: nonce derivation against nonce_hex, parsing of expected_plaintext_data_protobuf_hex, and ciphertext/plaintext length equality. See docs/protocol-spec.md section 5.",
+  "anonymization_note": "from_node was replaced with an obviously-fake node number before publication; nonce_hex was recomputed by applying nonce_construction's prose rule directly (not by calling this project's code, which would make the fixture assert our implementation against itself). The captured ciphertext, packet_id, hop fields, channel_hash and plaintext protobuf are unchanged, and the PSK was never recorded, so nothing here is decryptable either way."
+}
