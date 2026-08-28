@@ -118,7 +118,7 @@ handling follows `docs/security.md`.
 | `mqtt.root` | `msh/pvt` | A dedicated namespace instead of the default `msh`, to avoid mixing with public conventions |
 | `mqtt.encryption_enabled` | `true` | Keeps channel-PSK encryption on the MQTT hop. **Stock is `false`, which publishes decrypted packets whatever the channel key** — see §11 A |
 | `mqtt.json_enabled` | `false` | Prevents plaintext JSON leakage |
-| `mqtt.map_reporting_enabled` | `false` | Prevents position/site info from leaking externally. **Turning it on would not put a board on a public map anyway** — the report goes to the *configured* broker, which here is `brokerd`, not the public server (§14) |
+| `mqtt.map_reporting_enabled` | `true` in this deployment | Deliberately on, and **only** because the outbound relay is meant to publish map reports to the public server (§11 C, §14, `docs/outbound-relay.md`). Enabling it does **not** by itself put a board on a public map — the report goes to the *configured* broker, which here is `brokerd`. Off is the right value for any deployment not using that feature, and it needs a second opt-in (`should_report_location`) to emit anything at all |
 | `mqtt.proxy_to_client_enabled` | `false` | Not needed by default (assumes the board can reach the internet over its own WiFi). See the fallback in §8 |
 | `mqtt.username` / `mqtt.password` | `<PLACEHOLDER>` (per account) | See `docs/security.md` §3. Passwords are stored as bcrypt hashes in `brokerd`. ⚠️ **`mqtt.password` holds at most 31 characters** and there is no warning if you exceed it — see §12 |
 
@@ -153,12 +153,25 @@ handling follows `docs/security.md`.
   not about whether this channel is relayed. It is a separate, per-sender
   setting and applies whatever the channel's key — §16.
 
-### Dedicated channel (the one actually relayed through `brokerd`)
+### Dedicated channels (the ones actually relayed through `brokerd`)
 
-- Create a dedicated channel (e.g. named `pvt`) shared by both sites.
-- Set `uplink_enabled = true` and `downlink_enabled = true` on both boards.
-- Both boards must use the **same 32-byte PSK**; the actual value lives
+- Create a dedicated channel (this document calls it `pvt`; real names are
+  never written here) and give it to every participant.
+- Set `uplink_enabled = true` and `downlink_enabled = true` on the gateway
+  boards.
+- Every participant must use the **same 32-byte PSK**; the actual value lives
   only in `.env`/a secrets manager, never in this document.
+- **More than one such channel is normal.** `brokerd`'s `channels[]` is a list
+  and the topic grammar keys on the channel name (`docs/protocol-spec.md` §1),
+  so nothing here is single-channel; `pvt` is one example, not a limit. Each
+  additional channel repeats the checklist below in full — including the
+  `brokerd`-side key registration, without which its traffic is stored as
+  opaque `raw_frames`.
+- A channel does **not** have to exist on every board. One carried by a single
+  gateway simply has a single uplink path: no second board will pick its
+  traffic up if that one is offline, and it has no cross-site downlink. That is
+  a consequence to know, not a fault — record which boards carry which channels
+  in `docs/environment.md`.
 
 ### Mobile / battery-powered nodes (non-gateway)
 
@@ -339,7 +352,6 @@ marked accordingly rather than guessed.
 |---|---|---|---|
 | Primary channel `uplink_enabled` / `downlink_enabled` | `false` (proto3 default; confirmed via `meshtastic --info`) | `false` | So the "not relayed" intent is auditable in config, not just an accident of never having been touched (§7) |
 | `mqtt.json_enabled` | `false` (confirmed via `meshtastic --info`) | `false` | Prevents plaintext JSON leakage regardless of the actual stock value (§7) |
-| `mqtt.map_reporting_enabled` | `false` (confirmed via `meshtastic --info`) | `false` | Prevents position/site info leaking outside the intended outbound-relay path, if any (§7) |
 
 ### C. Required only for the optional selective outbound relay (`docs/outbound-relay.md`)
 
@@ -348,6 +360,8 @@ marked accordingly rather than guessed.
 | `position.gps_mode` / `position.fixed_position` | **Required** | project sets `NOT_PRESENT` / `false` (no GPS hardware, §5) | a real position source enabled | No position source means no `POSITION_APP` packets exist at all (`docs/outbound-relay.md` §2) |
 | `pvt` channel's `position_precision` | **Required** | **Corrected (was assumed `0`, confirmed otherwise)**: the *primary* channel's stock default is actually `13` (≈ 2.9km) on the test board, not `0` — a freshly created secondary channel showed `32` (full precision) instead. Either way, don't assume `0`; always set it explicitly | a coarse non-zero value in `brokerd`'s configured eligible range | This *is* the core eligibility gate — `brokerd` never truncates precision itself (`docs/outbound-relay.md` §1/§2) |
 | `outbound_relay.enabled` (`brokerd`-side) | **Required** | `false` | `true` | Global kill switch; off unless deliberately turned on (ADR-12) |
+| `mqtt.map_reporting_enabled` | **Required** for the map-report path | `false` (confirmed via `meshtastic --info`) | `true` — **enabled in this deployment**, and map reports do arrive at `brokerd` | `MAP_REPORT_APP` is the only payload reaching `brokerd` that carries name *and* position together, which is what meshmap's validity check needs (§14). Without it the relay has nothing map-worthy to forward. Note what it discloses — §14's "What a map report discloses" is a longer list than "a coarse position" |
+| `mqtt.map_report_settings.should_report_location` | **Required** | `false` | `true` | A second, independent opt-in and a hard gate: `map_reporting_enabled` alone publishes nothing at all (§14, verified by three hours of silence). The CLI sets only the field named, so both have to be set explicitly |
 | `outbound_relay.dry_run_all_rules` (`brokerd`-side) | **Required** (to actually publish) | `true` | `false`, deliberately, after review | Prevents ever publishing to the real external server by accident (`docs/outbound-relay.md` §7) |
 | Primary channel's location sharing | Recommended, not required | — | explicitly disabled | Functionally, `pvt`'s own `position_precision` is what gates eligibility either way (official broadcast-selection logic already excludes Channel 0). This is a mitigation for an **unverified** firmware caveat where a secondary channel's precision might be overridden by the primary's — disabling it removes the ambiguity, but nothing structurally requires it if that caveat turns out not to apply (`docs/outbound-relay.md` §2) |
 | `position.position_broadcast_smart_enabled` | **Not required at all** | `true` | `false` (this project's choice) | Affects only *how often* eligible packets arrive, not whether they're eligible — the eligibility check (§1/§4 above) is identical either way. Kept off purely for predictable, easy-to-reason-about timing; for a stationary gateway board that never moves, smart broadcast's movement-triggered extra frequency never actually triggers anyway, so in practice this barely changes behavior for *this* project regardless (`docs/outbound-relay.md` §4) |

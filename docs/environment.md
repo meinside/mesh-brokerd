@@ -26,8 +26,16 @@ repository.
 ## Boards
 
 Record per board: model, firmware version, role, whether it has GPS, fixed
-position or not, and its MQTT username. Node IDs and long names are
-deliberately **not** recorded here.
+position or not, its MQTT username, and **which relayed channels it carries**.
+Node IDs, long names and channel names are deliberately **not** recorded here —
+a channel name travels in the clear as an MQTT topic segment, so treat it like a
+hostname, not like a secret and not like public information either.
+
+Several relayed channels are normal (`docs/firmware-config.md` §7). The reason
+to record the per-board set rather than just the list: a channel carried by one
+gateway has exactly one uplink path and no cross-site downlink, so "no traffic
+from that channel" has a different meaning for it than for a channel both
+boards carry.
 
 Settings that are not obvious and have cost time on real hardware are
 documented in `docs/firmware-config.md`, not duplicated here — in particular

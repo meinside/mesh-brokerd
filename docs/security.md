@@ -207,8 +207,17 @@ items below are therefore implemented as custom hooks.
   (`docs/monitoring-api.md` §4.1). It warns and never refuses the frame:
   dropping it would destroy the only evidence, and the packet cannot be
   re-encrypted after the fact.
-- `mqtt.json_enabled = false` and `mqtt.map_reporting_enabled = false`
-  prevent plaintext leakage and location exposure.
+- `mqtt.json_enabled = false` prevents decoded JSON copies of every packet
+  being published in the clear.
+- `mqtt.map_reporting_enabled` is the one board-side setting this deployment
+  turns **on** deliberately: `MAP_REPORT_APP` is unencrypted by design and is
+  what the outbound relay forwards to reach a public map
+  (`docs/firmware-config.md` §11 C/§14). It reaches `brokerd` only, never the
+  public server, until a relay rule publishes it — but treat the report's field
+  list, not "a coarse position", as what is being disclosed (§14's "What a map
+  report discloses"). A deployment not using that feature should leave it off,
+  and it needs `map_report_settings.should_report_location` as a second opt-in
+  to emit anything at all.
 - **The one deliberate exception**: the selective outbound relay
   (`docs/outbound-relay.md`, ADR-12) forwards specific, individually
   whitelisted, already-coarse data to the official public server — by

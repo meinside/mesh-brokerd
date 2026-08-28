@@ -278,6 +278,16 @@ meshtastic --port $P --set mqtt.map_reporting_enabled false
 meshtastic --port $P --set mqtt.proxy_to_client_enabled false
 ```
 
+**If this board feeds the outbound relay's map-report path, that
+`map_reporting_enabled false` line undoes it.** This block is the baseline for a
+board that only bridges the private channels; a board meant to publish map
+reports needs `mqtt.map_reporting_enabled true` **and**
+`mqtt.map_report_settings.should_report_location true` (both, and the CLI sets
+only the field named — `docs/firmware-config.md` §11 C/§14). Re-provisioning a
+board from this list alone silently stops its map reports, and the next
+missing-from-the-map report is an hour away at best
+(`publish_interval_secs` ≥ 3600).
+
 `mqtt.encryption_enabled` is set explicitly rather than assumed. Its
 stock default is not verified here, and the official MQTT module docs are
 blunt about the failure mode: "All messages are sent to the MQTT broker
