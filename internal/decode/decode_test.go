@@ -158,3 +158,72 @@ func TestDecode_MapReportNeedsNoChannelKey(t *testing.T) {
 		t.Errorf("ChannelSegment = %q, want the envelope's channel_id", res.ChannelSegment)
 	}
 }
+
+// TestDecode_ReportsWhetherThePayloadArrivedInTheClear pins the field a
+// caller cannot reconstruct afterwards: once Data has been parsed, a packet
+// whose channel encryption was stripped before uplinking
+// (mqtt.encryption_enabled = false) is indistinguishable from one this
+// decoder decrypted itself. Both produce StatusDecoded and the same payload.
+// internal/broker.PlaintextChecker is built entirely on this flag.
+func TestDecode_ReportsWhetherThePayloadArrivedInTheClear(t *testing.T) {
+	var psk [PSKSize]byte
+	for i := range psk {
+		psk[i] = byte(i + 1)
+	}
+	channels := map[string][PSKSize]byte{"pvt": psk}
+	data := EncodeData(PortNumTextMessage, []byte("hello"))
+
+	plain := EncodeServiceEnvelope(
+		EncodeMeshPacketDecoded(0x11223344, 0xffffffff, 4242, data), "pvt", "!11223344")
+	res, err := Decode("msh/pvt/2/e/pvt/!11223344", plain, channels)
+	if err != nil {
+		t.Fatalf("Decode (plaintext): %v", err)
+	}
+	if res.Status != StatusDecoded {
+		t.Fatalf("Status = %v, want decoded — a plaintext frame still decodes", res.Status)
+	}
+	if !res.ArrivedPlaintext {
+		t.Error("ArrivedPlaintext = false for a packet carrying the decoded variant")
+	}
+	if res.MapReport {
+		t.Error("MapReport = true for a channel topic")
+	}
+
+	ciphertext, err := CryptCTR(psk[:], DeriveNonce(4242, 0x11223344), data)
+	if err != nil {
+		t.Fatalf("CryptCTR: %v", err)
+	}
+	encrypted := EncodeServiceEnvelope(EncodeMeshPacket(MeshPacketFields{
+		From: 0x11223344, To: 0xffffffff, ID: 4242,
+		ChannelHash: ChannelHash("pvt", psk[:]), Encrypted: ciphertext,
+	}), "pvt", "!11223344")
+	res, err = Decode("msh/pvt/2/e/pvt/!11223344", encrypted, channels)
+	if err != nil {
+		t.Fatalf("Decode (encrypted): %v", err)
+	}
+	if res.Status != StatusDecoded {
+		t.Fatalf("Status = %v, want decoded", res.Status)
+	}
+	if res.ArrivedPlaintext {
+		t.Error("ArrivedPlaintext = true for a packet this decoder decrypted itself")
+	}
+}
+
+// A map report is plaintext by design, so both flags are set and the
+// distinction between them is what keeps the check from firing on it.
+func TestDecode_MapReportIsPlaintextByDesign(t *testing.T) {
+	data := EncodeData(PortNumMapReport, []byte{0x0a, 0x04, 'n', 'a', 'm', 'e'})
+	envelope := EncodeServiceEnvelope(
+		EncodeMeshPacketDecoded(0x55667788, 0xffffffff, 4242, data), "LongFast", "!55667788")
+
+	res, err := Decode("msh/pvt/2/map/", envelope, map[string][PSKSize]byte{})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if !res.ArrivedPlaintext {
+		t.Error("ArrivedPlaintext = false for a map report")
+	}
+	if !res.MapReport {
+		t.Error("MapReport = false for the map topic grammar")
+	}
+}

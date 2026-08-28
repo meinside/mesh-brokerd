@@ -377,17 +377,21 @@ meshtastic --port $P --seturl '<url>'        # on this node
 `--seturl` **replaces** the channel set, which is what step 1 protects
 against.
 
-**Step 3 — allow gateways to uplink this node's packets:**
+**Step 3 — allow gateways to uplink this node's packets.** This is the one
+irreversible step in this procedure, and the decision point: the flag is global
+consent for **any** gateway in range to uplink to **any** server, not consent
+scoped to `brokerd`. Work through `docs/firmware-config.md` §16's "What
+enabling it exposes" and its pre-flight checklist before running this — at
+minimum, step 4 below, and knowing that the node's name and any primary-channel
+telemetry become public:
 
 ```bash
 meshtastic --port $P --set lora.config_ok_to_mqtt true
 ```
 
-This is required, and it is invisible in two ways: the default `false` is
-omitted from `--info`, and a gateway that declines to uplink logs nothing on
-the server side — the frame simply never arrives. See
-`docs/firmware-config.md` §16 for the firmware gate this opens, and for what
-it consents to.
+It is required for the uplink to work at all, and it is invisible in two ways:
+the default `false` is omitted from `--info`, and a gateway that declines to
+uplink logs nothing on the server side — the frame simply never arrives.
 
 **Step 4 — GPS-equipped nodes only: stop sharing location on the primary
 channel.** The primary channel's stock `position_precision` is `13`, not `0`,
@@ -616,6 +620,32 @@ CGO_ENABLED=1 DIAG_DB=/tmp/diag.db DIAG_PSKS="<base64>,<base64>" \
 Give it the current key **and** any older one still in `.env`: a rotation is the
 usual reason a frame stopped being readable. When no key works, the frames were
 sent under a key this deployment never had -- which is itself the answer.
+
+## 9.5.2. Finding out whether a board ever uplinked in the clear
+
+`plaintext_uplinks_total` (`docs/monitoring-api.md` §4.1) is in-memory: it
+speaks only for the frames the running process has seen, and only exists in a
+build that has the check. The history is answerable anyway, because
+`raw_frames.payload` is the unmodified MQTT payload and "arrived in the clear"
+is a property of those bytes -- `MeshPacket`'s `payload_variant` is `decoded`
+rather than `encrypted`. **No channel key is needed for this one.**
+
+```bash
+sqlite3 "$DB" ".backup /tmp/diag.db"        # never read the live WAL directly
+CGO_ENABLED=1 DIAG_DB=/tmp/diag.db \
+  go test -tags diag ./internal/decode/ -run TestDiagPlaintextUplinks -v
+```
+
+It prints encrypted/plaintext counts per board and channel, and the time range
+of any plaintext run. Map reports are skipped -- unencrypted by design
+(`docs/firmware-config.md` §14). What a non-zero count means, and what to change
+on the board, is `docs/firmware-config.md` §11 A's `mqtt.encryption_enabled`
+row; a rotation afterwards does not un-publish what already went out in the
+clear.
+
+Why SQL alone cannot answer it: a plaintext frame's `decode_status` is
+`decoded`, its `text_messages` row is readable, and every counter looks normal
+-- identical in every stored column to a frame `brokerd` decrypted itself.
 
 ## 9.6. Opening the monitoring page
 

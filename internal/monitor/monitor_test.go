@@ -131,6 +131,10 @@ func TestStatsMessages_Shape(t *testing.T) {
 		// hooks that feed them act on nothing, so an unexposed counter is
 		// a counter nobody can ever read (this list caught two).
 		"listener_noise_suppressed_total", "board_node_id_mismatches_total",
+		// A frame that arrived in the clear on a PSK'd channel decodes and
+		// stores like any other, so this counter is the only reachable
+		// evidence of mqtt.encryption_enabled = false on a board.
+		"plaintext_uplinks_total",
 		"acl_denials_total", "downlink_missed_total", "connected_boards",
 		// session_takeovers_total is the only record that a replaced
 		// session's disconnect was deliberately not reported.

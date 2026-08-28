@@ -91,6 +91,11 @@ func (s *Server) handleStatsMessages(w http.ResponseWriter, r *http.Request) {
 		// than acted on, so this is the only place they accumulate.
 		"listener_noise_suppressed_total": s.broker.ListenerNoiseCounts(),
 		"board_node_id_mismatches_total":  s.broker.NodeIDMismatches(),
+		// Frames that arrived unencrypted on a channel with a configured
+		// PSK: the publishing board has mqtt.encryption_enabled = false,
+		// which is invisible everywhere else because such a frame decodes
+		// and stores exactly like a decrypted one.
+		"plaintext_uplinks_total": s.broker.PlaintextUplinks(),
 		// Publishes/subscribes the ACL refused. mochi-mqtt refuses a QoS 0
 		// publish silently, so this counter and its one log line are the
 		// only record that it happened.

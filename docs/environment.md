@@ -31,9 +31,14 @@ deliberately **not** recorded here.
 
 Settings that are not obvious and have cost time on real hardware are
 documented in `docs/firmware-config.md`, not duplicated here — in particular
-`lora.ignore_mqtt` (§13), `gps_mode` on a board without GPS (§15), and
+`lora.ignore_mqtt` (§13), `gps_mode` on a board without GPS (§15),
 `lora.config_ok_to_mqtt` for any non-gateway node whose traffic should reach
-the broker (§16).
+the broker (§16), and `mqtt.encryption_enabled`, whose stock `false` uplinks
+decrypted packets whatever the channel key (§11 A).
+
+Settings whose defaults this project has **not** yet audited are listed as open
+questions in `docs/firmware-config.md` §18. Answering one for a deployment is
+exactly the kind of fact this file is for.
 
 ## Connection stability
 

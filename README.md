@@ -55,7 +55,7 @@ path: `docs/architecture.md` §6.
 
 - [`docs/architecture.md`](docs/architecture.md) — Overall architecture, `brokerd` design, the serial extension point, data flow, firmware constraints
 - [`docs/deployment.md`](docs/deployment.md) — `brokerd` hosting guide (public server as the default path, plus a home-lab alternative)
-- [`docs/firmware-config.md`](docs/firmware-config.md) — Per-board Meshtastic settings, Bluetooth/WiFi/MQTT behavior, flashing procedure
+- [`docs/firmware-config.md`](docs/firmware-config.md) — Per-board Meshtastic settings, Bluetooth/WiFi/MQTT behavior, the per-sender `lora.config_ok_to_mqtt` consent (§16), flashing procedure
 - [`docs/runbook.md`](docs/runbook.md) — Companion app connection procedure, the protocol capture spike, `brokerd` verification, strong-auth operations, troubleshooting
 - [`docs/security.md`](docs/security.md) — Public-exposure ADR, TLS limitations, strong-auth layers (including mochi-mqtt custom hooks), trust boundaries
 - [`docs/hardware.md`](docs/hardware.md) — General board requirements plus the current hardware instance's (Heltec V4) specs and Meshtastic support status
@@ -74,6 +74,11 @@ Implemented and running against real hardware: two gateway boards at two
 sites bridge over MQTT/TLS, messages are decrypted and stored, cross-site
 delivery is verified in both directions, and a third non-gateway LoRa node's
 traffic reaches the broker through a gateway.
+
+That last path needs `lora.config_ok_to_mqtt` set **on the sending node**: a
+gateway uplinks its own packets unconditionally but drops another node's while
+that bit is clear, and nothing on the gateway or in `brokerd` can grant it
+(`docs/firmware-config.md` §16).
 
 The selective outbound relay to the official public MQTT server is
 implemented and off by default (`docs/outbound-relay.md`).

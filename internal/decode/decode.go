@@ -73,6 +73,25 @@ type Result struct {
 	Telemetry   *Telemetry
 	Routing     *Routing
 
+	// ArrivedPlaintext reports that the MeshPacket carried its Data in the
+	// `decoded` oneof variant -- i.e. nothing had to be decrypted, because
+	// the payload was already in the clear on the wire.
+	//
+	// Legitimate for a map report (unencrypted by design,
+	// docs/firmware-config.md §14). On a channel that has a PSK it means the
+	// publishing gateway stripped the channel encryption before uplinking,
+	// which is what `mqtt.encryption_enabled = false` does -- silently, and
+	// regardless of the channel's key (§11 A). Nothing downstream can infer
+	// this after the fact: a plaintext frame decodes and stores exactly like
+	// a decrypted one, so it is recorded here and checked in
+	// internal/broker.PlaintextChecker.
+	ArrivedPlaintext bool
+
+	// MapReport marks the {root}/2/map/ topic grammar, whose payload is
+	// unencrypted by design -- carried so callers can tell that apart from
+	// an unexpectedly plaintext channel frame.
+	MapReport bool
+
 	// PacketParsed reports whether PacketID/FromNode/ToNode/GatewayID
 	// were actually populated from a successfully parsed
 	// ServiceEnvelope/MeshPacket — false when StatusDecryptFailed happened
@@ -108,6 +127,7 @@ func Decode(topic string, payload []byte, channels map[string][PSKSize]byte) (*R
 		Topic:          topic,
 		ChannelSegment: t.Channel,
 		NodeSegment:    t.Node,
+		MapReport:      t.IsMapReport,
 	}
 
 	env, err := ParseServiceEnvelope(payload)
@@ -155,6 +175,7 @@ func Decode(topic string, payload []byte, channels map[string][PSKSize]byte) (*R
 	switch {
 	case mp.Decoded != nil:
 		dataBytes = mp.Decoded
+		res.ArrivedPlaintext = true
 	case mp.Encrypted != nil:
 		psk, ok := channels[t.Channel]
 		if !ok {

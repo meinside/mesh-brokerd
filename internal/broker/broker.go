@@ -265,6 +265,10 @@ func (b *Broker) ConnectedBoards() []string { return b.presence.Connected() }
 // DecodeStatusCounts exposes Worker.DecodeStatusCounts for monitoring.
 func (b *Broker) DecodeStatusCounts() map[string]int64 { return b.worker.DecodeStatusCounts() }
 
+// PlaintextUplinks exposes PlaintextChecker's counters for monitoring
+// (docs/monitoring-api.md's plaintext_uplinks_total).
+func (b *Broker) PlaintextUplinks() map[string]int64 { return b.worker.PlaintextUplinks() }
+
 // OutboundRelayCounters exposes the outbound relay engine's counters
 // for monitoring (docs/monitoring-api.md section 4,
 // docs/outbound-relay.md section 8). All three maps are empty

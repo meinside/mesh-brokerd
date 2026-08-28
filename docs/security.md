@@ -125,8 +125,19 @@ items below are therefore implemented as custom hooks.
   Direct messages are PKI-encrypted end to end and remain opaque
   (`docs/protocol-spec.md` §3).
 - **Outbound**: the selective relay is the one path by which anything leaves
-  this deployment, and it is whitelist-only and off by default
-  (`docs/outbound-relay.md`).
+  this deployment **under `brokerd`'s control**, and it is whitelist-only and
+  off by default (`docs/outbound-relay.md`).
+- **A member node's own `lora.config_ok_to_mqtt` is a second egress path, and
+  not one this deployment can gate.** Setting it on a node consents to *any*
+  gateway in range uplinking that node's packets to *any* server — typically a
+  stranger's, whose stock address is the official public one. Private-channel
+  payloads stay encrypted, but the envelope's metadata and everything on the
+  default-key primary channel (name, position, telemetry) do not. It is a
+  polite request honoured by official firmware, not a control, and nothing on
+  the gateway or in `brokerd` can grant or revoke it. Read
+  `docs/firmware-config.md` §16 — "What enabling it exposes" and its pre-flight
+  checklist — before enabling it on any node, and expect what has already been
+  published to stay published.
 - **ACL refusals are logged and counted.** mochi-mqtt refuses a QoS 0 publish
   with a bare `return nil` — no log, no counter — which makes a misconfigured
   board indistinguishable from an idle one. A hook registered *after* the ACL
@@ -173,11 +184,29 @@ items below are therefore implemented as custom hooks.
 
 ## 6. Channel/message encryption
 
+- **`mqtt.encryption_enabled` is `false` out of the box, and its name says
+  the opposite of what it does.** It is not "also encrypt": at `false` the
+  board publishes every uplinked packet **decrypted**, which upstream's own
+  documentation states happens "even when your uplink channels have
+  encryption keys set". A correct 32-byte PSK on both boards protects nothing
+  on the MQTT hop while this is off, and with the stock `mqtt.address` that
+  plaintext goes to the public server. Keeping it `true` is what makes the
+  point below true at all. It is a **gateway-side** setting — the publishing
+  node's, not the sender's — so the exposure surface is the set of boards with
+  `mqtt.enabled`, currently two, both confirmed `true`.
 - Keeping `mqtt.encryption_enabled = true` means message bodies stay
   encrypted with the channel PSK even while passing through the broker —
   `brokerd`'s operator (i.e. us) cannot see plaintext at the broker level
   either; decryption is only possible where the storage logic itself holds
   the channel key.
+- **The misconfiguration fails in the healthy-looking direction, so it is
+  detected rather than assumed.** A decrypted frame parses, stores and reads
+  exactly like an encrypted one, leaving every other counter normal.
+  `internal/broker.PlaintextChecker` therefore warns once per (board,
+  channel) and counts every occurrence as `plaintext_uplinks_total`
+  (`docs/monitoring-api.md` §4.1). It warns and never refuses the frame:
+  dropping it would destroy the only evidence, and the packet cannot be
+  re-encrypted after the fact.
 - `mqtt.json_enabled = false` and `mqtt.map_reporting_enabled = false`
   prevent plaintext leakage and location exposure.
 - **The one deliberate exception**: the selective outbound relay

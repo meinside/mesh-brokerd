@@ -116,7 +116,7 @@ handling follows `docs/security.md`.
 | `mqtt.address` | `<brokerd public domain>:8883` | Same on both boards (symmetric default). The firmware accepts an explicit `host:port` (confirmed in `src/mqtt/MQTT.cpp`'s `parseHostAndPort`) and otherwise falls back to `1883` (plaintext) or `8883` (TLS) by default. `8883` is the standard MQTT-over-TLS port and is used explicitly here for clarity. Can be a local IP (no port needed, defaults to `1883`) for the home board only, if deployed from a home lab |
 | `mqtt.tls_enabled` | `true` | Same on both boards (symmetric default). Can be `false` for the home board if it connects over the local LAN directly |
 | `mqtt.root` | `msh/pvt` | A dedicated namespace instead of the default `msh`, to avoid mixing with public conventions |
-| `mqtt.encryption_enabled` | `true` | Keeps channel-PSK encryption so even `brokerd`'s operator can't see plaintext |
+| `mqtt.encryption_enabled` | `true` | Keeps channel-PSK encryption on the MQTT hop. **Stock is `false`, which publishes decrypted packets whatever the channel key** — see §11 A |
 | `mqtt.json_enabled` | `false` | Prevents plaintext JSON leakage |
 | `mqtt.map_reporting_enabled` | `false` | Prevents position/site info from leaking externally. **Turning it on would not put a board on a public map anyway** — the report goes to the *configured* broker, which here is `brokerd`, not the public server (§14) |
 | `mqtt.proxy_to_client_enabled` | `false` | Not needed by default (assumes the board can reach the internet over its own WiFi). See the fallback in §8 |
@@ -148,13 +148,10 @@ handling follows `docs/security.md`.
   publicly known byte sequence baked into the firmware source — so an
   unconfigured primary channel is not just unrelayed, its content isn't
   meaningfully private in the first place.
-- Also worth knowing: there's a separate `lora.config_ok_to_mqtt`
-  ("OK to MQTT") flag, but it only applies to channels using the
-  well-known default/event PSKs, and is a non-cryptographic "please
-  don't relay me" request to *other operators'* gateways — it doesn't
-  apply to our custom-PSK `pvt` channel at all, and isn't something this
-  project needs to set. Confirmed on the test board as
-  `configOkToMqtt: false` (the stock default).
+- Not to be confused with `lora.config_ok_to_mqtt` ("OK to MQTT"), which is
+  about whether *other* nodes' gateways may uplink **this node's** packets,
+  not about whether this channel is relayed. It is a separate, per-sender
+  setting and applies whatever the channel's key — §16.
 
 ### Dedicated channel (the one actually relayed through `brokerd`)
 
@@ -163,17 +160,16 @@ handling follows `docs/security.md`.
 - Both boards must use the **same 32-byte PSK**; the actual value lives
   only in `.env`/a secrets manager, never in this document.
 
-### Mobile / battery-powered nodes (non-gateway) — future extension
+### Mobile / battery-powered nodes (non-gateway)
 
-> No such node exists in this project's *own* deployment today
-> (office/home are both constant-power gateway boards, §1) — but a
-> gateway's `meshtastic --info` already lists a nearby node of exactly
-> this category: a `SEEED_WIO_TRACKER_L1` (nRF52840-based, no WiFi per
-> `docs/hardware.md` §1's market note). Node IDs and names are left out
-> here deliberately, as everywhere else in `docs/`. It's a concrete
-> confirmation that this scenario isn't hypothetical. This
-> subsection is written ahead of time so that adding a node like it to
-> `pvt` later doesn't require re-deriving the reasoning from scratch.
+> Both of this project's own gateway boards are constant-power (§1); the
+> non-gateway nodes described here are additional participants. A third and a
+> fourth such node are under test, and the uplink path is **confirmed**: with
+> `lora.config_ok_to_mqtt` set on the node, its private-channel traffic
+> reaches `brokerd` through a gateway (§16, procedure in `docs/runbook.md`
+> §5.6). One of them is a `SEEED_WIO_TRACKER_L1` (nRF52840-based, no WiFi per
+> `docs/hardware.md` §1's market note). Node IDs and names are left out here
+> deliberately, as everywhere else in `docs/`.
 
 **`uplink_enabled`/`downlink_enabled` only do something on a node that also
 has `mqtt.enabled = true` (i.e. currently: the office/home gateway boards).**
@@ -188,13 +184,24 @@ Consequences for a battery-powered node joining a relayed channel:
 - **Required**: the same channel name + the same 32-byte PSK as the
   gateway boards (this is what lets it talk to them over LoRa at all).
 - **Not required, and pointless to set**: `mqtt.enabled`, `uplink_enabled`,
-  `downlink_enabled`. Leave WiFi off entirely — the node connects to the
-  companion app over BLE instead (BLE and WiFi are mutually exclusive on
+  `downlink_enabled`, `mqtt.encryption_enabled`. The last one is worth naming
+  explicitly because §11 A calls it the second most consequential setting in
+  this document: it governs whether *the publishing node* encrypts on the MQTT
+  hop, and a non-gateway node never publishes to MQTT — the gateway that
+  uplinks its packets decides. Leave WiFi off entirely — the node connects to
+  the companion app over BLE instead (BLE and WiFi are mutually exclusive on
   ESP32, §2), which keeps deep-sleep power saving available.
-- The gateway boards (whose channel copy already has
-  `uplink_enabled = true`) pick up the mobile node's LoRa traffic on that
-  channel automatically and relay it to `brokerd` — this is a property of
-  the shared channel, not of anything configured on the mobile node.
+- **Required on the node itself**: `lora.config_ok_to_mqtt = true` — the one
+  MQTT-related setting that is not pointless on a non-gateway node, and one
+  nothing else can grant on its behalf. It also has consequences outside this
+  deployment: §16 before enabling it.
+- With the shared channel key and that flag both in place, the gateway boards
+  (whose channel copy already has `uplink_enabled = true`) pick up the node's
+  LoRa traffic on that channel and relay it to `brokerd`; no other setting on
+  the node is involved. boards (whose channel copy already
+  has `uplink_enabled = true`) pick up the mobile node's LoRa traffic on
+  that channel and relay it to `brokerd` — no other mobile-node
+  configuration is involved.
 
 **Power consequence: none, either way.** Whether `uplink_enabled`/
 `downlink_enabled` are set has no bearing on a battery node's power draw,
@@ -208,7 +215,7 @@ enable WiFi unless it is itself meant to become a gateway.
 
 #### Checklist: adding a new channel intended to flow through `brokerd`
 
-Two separate prerequisites have to both be satisfied — one on the board
+Three separate prerequisites have to all be satisfied — two on the board
 side, one on `brokerd`'s side:
 
 1. **Board side (required for relay to happen at all)**: create the
@@ -220,7 +227,12 @@ side, one on `brokerd`'s side:
    (see "Mobile / battery-powered nodes" above). Without a matching
    channel key, a board/node never even attempts to publish/subscribe on
    that channel — `brokerd`'s own configuration is irrelevant.
-2. **`brokerd` side (required for storage to be readable)**: register the
+2. **Sending-node side (required for any *non-gateway* participant)**: set
+   `lora.config_ok_to_mqtt = true` on each such node, or the gateway hears
+   its packets over LoRa and declines to uplink them. Not a formality — it is
+   global consent, and §16 carries what it exposes and the checklist to run
+   first.
+3. **`brokerd` side (required for storage to be readable)**: register the
    same channel name + PSK in `brokerd`'s own config. Relay of encrypted
    bytes between boards happens either way (that's a plain MQTT pub/sub
    mechanic, gated only by account ACL — see `docs/security.md` §3), but
@@ -230,7 +242,7 @@ side, one on `brokerd`'s side:
    (`docs/architecture.md` §3), adding the key later lets you reprocess
    already-stored raw frames retroactively — nothing already captured is
    lost by forgetting this step temporarily.
-3. Restart `brokerd` so the new key takes effect. Hot-reload of channel
+4. Restart `brokerd` so the new key takes effect. Hot-reload of channel
    keys without a restart is deferred for v1 (ADR-6, `docs/adr.md`) —
    plan for a brief relay interruption (drain timeout, then restart) when
    adding or rotating a channel key.
@@ -314,6 +326,7 @@ marked accordingly rather than guessed.
 | `mqtt.enabled` | `false` | `true` | Required for any MQTT bridging (§7) |
 | `mqtt.address` | **the official public server, pre-filled even while disabled** — stock config ships with `address: "mqtt.meshtastic.org"` and demo credentials (`username: "meshdev"`, `password: "large4cats"` — `default_mqtt_username`/`default_mqtt_password` in `src/mesh/Default.h`, copied into a fresh config by `NodeDB.cpp`); not literally blank, but the same effective trap | `<brokerd public domain>:8883` | ⚠️ **The single most consequential non-default setting in this entire document.** Leaving this at its stock value — e.g. during a rushed initial setup, or after a factory reset that wasn't followed all the way through provisioning — does not fail closed; it silently keeps the board pointed at `mqtt.meshtastic.org` (with the demo creds) instead of `brokerd`. Combined with the `pvt` channel already having `uplink_enabled = true`, this could uplink private-channel traffic (still PSK-encrypted, but with topic/`gateway_id`/timing metadata exposed) to the public server without any error being raised. **Verify this field is explicitly set to `brokerd`'s address as a step in `docs/runbook.md`'s provisioning/verification procedures, not just at initial setup.** |
 | `mqtt.tls_enabled` | `false` (confirmed via `meshtastic --info` on the test board: `tlsEnabled: false` out of the box) | `true` | Required so board–`brokerd` traffic isn't sent in the clear over the public internet |
+| `mqtt.encryption_enabled` | `false` | `true` — **confirmed set on both gateway boards** | ⚠️ **A name that means the opposite of what it looks like.** It does not add encryption — leaving it at the stock `false` makes the board publish every uplinked packet **decrypted**, and the official MQTT module documentation is explicit that this happens "even when your uplink channels have encryption keys set". A correct 32-byte `pvt` PSK on both boards does not protect anything on the MQTT hop while this is `false`. Combined with the `mqtt.address` trap above it is a plaintext leak to the public server. **Whose setting decides**: the *uplinking gateway's*, because it is the node doing the publishing — a non-gateway node has no MQTT connection and its own copy of this field is inert (§7's mobile-node list). So this row is a two-board question here, not a per-participant one. It also **fails silently in the healthy direction**: such a frame decodes, stores and reads exactly like a properly encrypted one, so `brokerd` reports it as `plaintext_uplinks_total` (`internal/broker.PlaintextChecker`, `docs/monitoring-api.md` §4.1) — which is the only place it is visible, and the only check that covers gateways nobody has read `--info` from |
 | `mqtt.root` | `msh` | `msh/pvt` | Avoids mixing with the public convention's default namespace (§7) |
 | `mqtt.username` / `mqtt.password` | blank | per-board `<PLACEHOLDER>` | Required for `brokerd`'s account/ACL model (`docs/security.md` §3) |
 | `pvt` channel (doesn't exist out of the box) | — | created, with `uplink_enabled = true`, `downlink_enabled = true`, a private 32-byte PSK | This channel *is* the private bridge — nothing flows to `brokerd` without it (§7) |
@@ -346,7 +359,14 @@ marked accordingly rather than guessed.
 |---|---|---|---|
 | `mqtt.proxy_to_client_enabled` | `false` | `true` | Only meaningful for a board with no WiFi radio at all, or as a fallback (§8's F1) |
 
-Nothing in sections C or D is needed for the core private bridge (section A) to work — they're additive, optional paths.
+### E. Required only on a non-gateway node whose traffic should reach `brokerd`
+
+| Setting | Stock default | This project (if such a node joins) | Why |
+|---|---|---|---|
+| `lora.config_ok_to_mqtt` | `false` (confirmed via `meshtastic --info`: `configOkToMqtt: false`) | `true`, **on that node** | A gateway uplinks its own packets unconditionally but drops another node's while this bit is clear, whatever the channel's key — so without it the node's traffic never reaches `brokerd` at all, and nothing on the gateway or in `brokerd` can grant it. It is global consent (any gateway in range, any server), so work through §16's "What enabling it exposes" and its pre-flight checklist before enabling it |
+
+Nothing in sections C, D or E is needed for the core private bridge (section A)
+to work — they're additive, optional paths.
 
 ## 12. Field-length limits (sourced)
 
@@ -517,41 +537,127 @@ all — it does not fall back to a fixed position. For a fixed installation set
 
 ## 16. A gateway uplinks another node's packet only if the sender opted in
 
+This section is the single reference for `lora.config_ok_to_mqtt`; §7 and §11
+point here rather than restating it, and `docs/runbook.md` §5.6 carries the
+provisioning sequence.
+
+### The gate
+
 A gateway forwards its **own** packets to MQTT unconditionally, but drops
 another node's unless that node set `lora.config_ok_to_mqtt`. From
-`MQTT::onSend()` (firmware `v2.7.26.54e0d8d`):
+`MQTT::onSend()` (firmware `v2.7.26.54e0d8d`), described rather than quoted
+(the firmware is GPL-3.0 and this project is MIT — ADR-13): the packet is
+dropped when **all three** hold — it did not originate on this node, the
+configured MQTT server address is not private, and the packet's `Data.bitfield`
+either is absent or has the "ok to MQTT" bit clear. The log line it emits names
+the `DontMqttMeBro` flag.
 
-Its condition, described rather than quoted (the firmware is GPL-3.0 and this
-project is MIT — ADR-13): the packet is dropped when **all three** hold — it did
-not originate on this node, the configured MQTT server address is not private,
-and the packet's `Data.bitfield` either is absent or has the "ok to MQTT" bit
-clear. The log line it emits names the `DontMqttMeBro` flag.
+All three hold in this deployment (the packet is another node's, the broker is
+at a public address, and the flag defaults to `false`), so a non-gateway node's
+traffic never arrives until the flag is set **on that node** — there is nothing
+the gateway or `brokerd` can set on its behalf. The command is deliberately
+not here: it belongs after "What enabling it exposes" and the checklist below.
 
-All three conditions hold in this deployment (the packet is another node's,
-the broker is at a public address, and the flag defaults to `false`), so a
-non-gateway node's traffic never arrives until the flag is set **on that
-node**:
+### Why the default is `false`
+
+It is a consent flag, and the default for consent is "no". meshtastic.org's
+LoRa config page states the intent: `true` means the user approves their
+packets being uplinked to MQTT brokers, `false` asks receiving nodes not to
+forward them — "not a cryptographic solution but a polite request" that the
+official firmware honours.
+
+The reason it needs a default at all: a LoRa broadcast is heard by every node
+in range, and any one of them may be a gateway whose stock `mqtt.address` is
+the **public** `mqtt.meshtastic.org` (§11 A). With `true` as the default,
+joining a mesh would silently mean publishing to the internet — and on the
+primary channel, under the well-known default key, that includes `NODEINFO_APP`
+(name, ID, hardware) and positions in readable form. So it fails closed, and
+only those who want that exposure opt in.
+
+The gate's other two conditions follow the same logic — each is a case where
+consent already exists or nothing leaves:
+
+| Condition for dropping | Why it is worded that way |
+|---|---|
+| the packet did not originate on this node | a node's own packets are always uplinked: configuring `mqtt.enabled` on it *is* the consent |
+| the MQTT address is not private | a private broker is treated as the operator's own infrastructure, so the traffic never leaves their network |
+| the "ok to MQTT" bit is clear | the fail-closed default above |
+
+This project's two gateway boards are covered by the first exemption — they
+uplink their own traffic and need no flag. `brokerd` sits at a public address,
+so it gets no benefit from the second. That is exactly why a third,
+non-gateway node is the only participant that has to opt in.
+
+### What enabling it exposes
+
+**Read this before deciding, not after.** Two properties make the consequences
+wider than "my packets reach my broker": it is **global** (any gateway in
+range, any server — it cannot be scoped to `brokerd`) and it is **a request,
+not a control** (only the official firmware honours it, so a modified gateway
+ignores it either way).
+
+- **The primary channel becomes public plaintext.** It uses the well-known
+  default key, so `NODEINFO_APP` (long/short name, node ID, hardware model,
+  role, firmware version) and position broadcasts are readable by anyone
+  subscribed to the public server.
+- **A named GPS node can land on a public map.** meshmap's `IsValid` needs
+  exactly what the primary channel hands out: seen by an uplinking gateway, a
+  non-empty long name, and a position that is not 0/0 (§14). No map reporting
+  on the node is required for this — `MAP_REPORT_APP` needs the node's own MQTT
+  connection, which a non-gateway node does not have, but `NODEINFO_APP` plus a
+  position over LoRa is enough.
+- **Private-channel *metadata* leaks even though the payload does not.** A
+  stranger's gateway uplinks the whole envelope: sender and destination node
+  IDs, timing, SNR/hop data, `gateway_id`, and the **channel name** in the
+  topic. Who talks to whom, how often, and which gateway heard it — and if that
+  gateway publishes its own position, roughly where the node was.
+- **Identity and private activity get correlated.** The same node ID appears on
+  the public primary channel (with name and position) and on the private
+  channel, linking the two. DM payloads stay PKC-encrypted, but sender and
+  destination do not (`docs/protocol-spec.md` §3).
+- **Telemetry is a behaviour log.** `DEVICE_METRICS` (battery, voltage, channel
+  utilisation) broadcast on the primary channel reveals occupancy, movement and
+  charging habits as a time series.
+- **It is not retractable.** Third parties archive what reaches the public
+  server; turning the flag off later stops new data only.
+
+### Pre-flight checklist — then the command
+
+1. **Silence position on the primary channel**: the stock
+   `position_precision` there is `13` (≈5.8 km cells), not `0`:
+   `--ch-set module_settings.position_precision 0 --ch-index 0`. On a node with
+   no GPS, also confirm `gps_mode: NOT_PRESENT` and no fixed position (§15).
+2. **Treat the node's name as public.** Long and short name travel in
+   `NODEINFO_APP` under the default key. An empty long name also keeps the node
+   off meshmap.
+3. **Decide about telemetry** broadcast on the primary channel: disable it, or
+   accept the time series above.
+4. **Consider a custom PSK on the primary channel** — the strongest mitigation
+   by far, since it makes `NODEINFO_APP`, position and telemetry unreadable to
+   strangers instead of merely coarse. The cost is interoperability with the
+   public mesh (`LongFast`), which a private deployment may not need.
+5. **Scope it in time.** Enable it on the nodes that need it, for as long as
+   they need it, and turn it off again afterwards.
+6. **Never** fake a private `mqtt.address` to bypass the gate (see the last
+   item under "Details" below).
+7. **Verify what actually leaves.** `brokerd`'s database shows only the
+   intended path; the public one has to be checked directly, by subscribing to
+   the official server (`msh/+/2/e/#`) and watching for the node's own ID. This
+   is the only evidence of the exposure above, in either direction.
+
+Only then:
 
 ```
 meshtastic --port <serial> --set lora.config_ok_to_mqtt true
 ```
 
-`docs/runbook.md` §5.6 carries the full provisioning sequence.
-
-Facts worth knowing before enabling it:
+### Details confirmed against the source
 
 - **The bit is set at encode time from that node's own config**
   (`Router.cpp`, `perhapsEncode`: `has_bitfield = true; bitfield |=
   config.lora.config_ok_to_mqtt << 0`), so it reflects the sender's setting
   at the moment of transmission and nothing else.
-- **It is global consent, not per-broker.** Any gateway in range may uplink
-  the node's packets, to any server. Custom-PSK channels stay unreadable to
-  strangers, but the **primary** channel does not: `NODEINFO_APP` and
-  position broadcasts go out there under the well-known default key.
-- **The primary channel's stock `position_precision` is `13`** (≈5.8 km
-  cells), not `0`. On a GPS node, disable it before enabling the flag:
-  `--ch-set module_settings.position_precision 0 --ch-index 0`.
-- Precision is **per channel** — `getPositionPrecisionForChannel()` reads the
+- Position precision is **per channel** — `getPositionPrecisionForChannel()` reads the
   channel it is handed, never the primary (`PositionPrecision.cpp`). A channel
   with no `module_settings` fails closed at `0`; older firmware defaulted a
   primary channel to `32`, i.e. full precision (upstream #10509), so re-check
@@ -562,8 +668,9 @@ Facts worth knowing before enabling it:
   the MQTT module documentation lists it. `MQTTConfig` has no such field.
 - meshtastic.org states that channels with custom keys ignore this setting.
   The firmware source contains no such exception — the gate never reads the
-  PSK. Verify claims like this against the source at the tag the hardware
-  runs.
+  PSK. The same page's statement of *intent* is quoted above and holds; its
+  statement of *scope* does not. Verify claims like this against the source at
+  the tag the hardware runs.
 - Do not fake a private broker address to bypass the gate:
   `isPrivateIpAddress()` counts `100.64.0.0/10` (Tailscale CGNAT), which
   would uplink **every** node's traffic in range, including packets whose
@@ -629,3 +736,33 @@ peer's.
 A node in a preferred-rebroadcaster role does not send NodeInfo on hearing a new
 node (`!isPreferredRebroadcaster` in the same condition), so role changes affect
 this too.
+
+## 18. Settings not audited yet
+
+Everything above is either measured on the hardware or read out of the firmware
+source. **This section is neither.** It exists because two settings in this
+document (`lora.ignore_mqtt`, §13, and `mqtt.encryption_enabled`, §11 A) were
+each found late, and both share one shape: a stock default that quietly widens
+exposure or narrows function while the deployment keeps looking healthy. The
+list below is the result of asking which *other* settings have that shape. No
+claim here about a default value or this deployment's current state has been
+verified — treat each line as a question to answer on the boards, and move it
+into §11 with a measurement once answered.
+
+`--info` omits every `false`/`0` (§13), so "absent from `--info`" is not an
+answer; read the field explicitly (`meshtastic --get <field>`).
+
+| Setting | Why it could matter here | What to check |
+|---|---|---|
+| `device.rebroadcast_mode` | Decides whether these boards act as relay infrastructure for strangers' traffic. Not a confidentiality question (`pvt` stays encrypted) but an airtime and duty-cycle one, and it changes what a gateway *hears* and therefore what it may uplink | Current value on both boards; whether `LOCAL_ONLY`/`KNOWN_ONLY` would break the third/fourth non-gateway nodes' path to a gateway |
+| `neighbor_info.enabled` | Broadcasts who-hears-whom. That graph is location inference material, and it travels on a channel other nodes may uplink | That it is off, and that nothing in the companion app turned it on per-node |
+| `security.admin_key`, legacy `is_managed`, any admin channel | Remote administration is a config-write path over the mesh. §5 of `docs/security.md` covers admin *operations* but not these fields | Whether an admin key is set, and what channel remote admin would arrive on |
+| `bluetooth.fixed_pin` | Stock is a well-known constant. Currently inert on both boards — BLE cannot pair while WiFi is up on ESP32 (§2) — but it becomes live for a WiFi-less board (§8's F1, ADR-10) | Value, and whether BLE is genuinely unreachable rather than merely unused |
+| `store_forward` module | A node that stores and replays others' messages changes both retention and who can retrieve what, outside `brokerd`'s storage model entirely | Whether it is enabled anywhere in the mesh |
+| `serial` module | An enabled serial module is a data path in and out of the node that this project's serial usage (§8, read-only debugging) does not need | Whether it is enabled |
+| Telemetry broadcast | §16 lists `DEVICE_METRICS` as a behaviour log once a node opts into MQTT. Which channel it goes out on, and how often, decides how much of that is public | Per-node telemetry intervals, and the channel index each telemetry type uses |
+
+Two of these (`device.rebroadcast_mode`, telemetry) are behaviour questions
+where the answer may well be "leave it"; the rest are exposure questions where
+the answer should be written down either way. Recording "checked, stock, fine"
+is worth as much here as finding another `ignore_mqtt`.

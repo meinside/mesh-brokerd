@@ -406,6 +406,7 @@ func (s *Server) pageHealth() pageHealth {
 		h.Counters = append(h.Counters, labelledCounts("listener noise suppressed", s.broker.ListenerNoiseCounts())...)
 		h.Counters = append(h.Counters, labelledCounts("ACL refusals", s.broker.ACLDenials())...)
 		h.Counters = append(h.Counters, labelledCounts("board node_id mismatch", s.broker.NodeIDMismatches())...)
+		h.Counters = append(h.Counters, labelledCounts("unencrypted uplinks", s.broker.PlaintextUplinks())...)
 	}
 	if s.authHook != nil {
 		h.AuthFailures = s.authHook.FailuresTotal()

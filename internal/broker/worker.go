@@ -29,6 +29,11 @@ type Worker struct {
 	// seen in traffic. May be nil in tests.
 	nodeIDChecker *NodeIDChecker
 
+	// plaintextChecker reports frames that arrived unencrypted on a
+	// channel with a configured PSK. Built from channels, so it needs no
+	// constructor parameter of its own.
+	plaintextChecker *PlaintextChecker
+
 	// hooks is nil unless event_hooks is configured (ADR-17).
 	hooks HookDispatcher
 	// relayEngine is nil unless outbound_relay is configured at all
@@ -54,6 +59,7 @@ func NewWorker(relayHook *RelayHook, store *storage.Store, channels map[string][
 		channels:          channels,
 		boardIDByUsername: boardIDByUsername,
 		nodeIDChecker:     nodeIDChecker,
+		plaintextChecker:  NewPlaintextChecker(channels),
 		relayEngine:       relayEngine,
 		log:               log,
 		decodeFailures:    make(map[decode.Status]int64),
@@ -105,6 +111,13 @@ func (w *Worker) processOne(msg queuedMessage) {
 	if w.nodeIDChecker != nil {
 		w.nodeIDChecker.Check(boardID, res.GatewayID, w.log)
 	}
+
+	// A frame that arrived in the clear on a channel with a PSK means the
+	// board is publishing decrypted packets (mqtt.encryption_enabled =
+	// false). It decodes and stores like any other frame, so this check is
+	// the only thing that makes it visible. Warn only, never act -- see
+	// PlaintextChecker.
+	w.plaintextChecker.Check(boardID, res, w.log)
 
 	// Duplicate suppression (ADR-14, docs/protocol-spec.md section 2):
 	// firmware re-delivers the same packet more than once in practice.
@@ -213,6 +226,12 @@ func (w *Worker) processOne(msg queuedMessage) {
 // optional wiring, and every call site of NewWorker would otherwise have to
 // name it.
 func (w *Worker) SetHooks(d HookDispatcher) { w.hooks = d }
+
+// PlaintextUplinks returns a snapshot of the per-board plaintext-arrival
+// counters (docs/monitoring-api.md's plaintext_uplinks_total).
+func (w *Worker) PlaintextUplinks() map[string]int64 {
+	return w.plaintextChecker.PlaintextUplinks()
+}
 
 func (w *Worker) recordDecodeStatus(status decode.Status) {
 	w.mu.Lock()
