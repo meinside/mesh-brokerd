@@ -3,12 +3,8 @@
 package decode
 
 import (
-	"database/sql"
-	"os"
 	"sort"
 	"testing"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // TestDiagPlaintextUplinks answers "has any board ever uplinked to this broker
@@ -35,15 +31,7 @@ import (
 //	CGO_ENABLED=1 DIAG_DB=… \
 //	  go test -tags diag ./internal/decode/ -run TestDiagPlaintextUplinks -v
 func TestDiagPlaintextUplinks(t *testing.T) {
-	dbPath := os.Getenv("DIAG_DB")
-	if dbPath == "" {
-		t.Fatal("DIAG_DB not set")
-	}
-
-	db, err := sql.Open("sqlite3", "file:"+dbPath+"?mode=ro")
-	if err != nil {
-		t.Fatalf("opening %s: %v", dbPath, err)
-	}
+	db := openDiagDB(t)
 	defer func() { _ = db.Close() }()
 
 	rows, err := db.Query(`

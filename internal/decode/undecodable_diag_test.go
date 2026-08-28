@@ -3,14 +3,11 @@
 package decode
 
 import (
-	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // TestDiagUndecodableFrames answers "what portnums are hiding in the frames
@@ -29,10 +26,6 @@ import (
 //	CGO_ENABLED=1 DIAG_DB=… DIAG_PSKS=base64,base64 \
 //	  go test -tags diag ./internal/decode/ -run TestDiagUndecodableFrames -v
 func TestDiagUndecodableFrames(t *testing.T) {
-	dbPath := os.Getenv("DIAG_DB")
-	if dbPath == "" {
-		t.Fatal("DIAG_DB not set")
-	}
 	var psks [][PSKSize]byte
 	for _, raw := range strings.Split(os.Getenv("DIAG_PSKS"), ",") {
 		raw = strings.TrimSpace(raw)
@@ -54,10 +47,7 @@ func TestDiagUndecodableFrames(t *testing.T) {
 		t.Fatal("DIAG_PSKS not set")
 	}
 
-	db, err := sql.Open("sqlite3", "file:"+dbPath+"?mode=ro")
-	if err != nil {
-		t.Fatalf("opening %s: %v", dbPath, err)
-	}
+	db := openDiagDB(t)
 	defer func() { _ = db.Close() }()
 
 	rows, err := db.Query(

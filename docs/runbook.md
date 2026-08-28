@@ -611,6 +611,17 @@ NODEINFO" is therefore blind to those frames, and reading its empty result as
 reports the portnum it finds. Keys come from the environment; names are reported
 as lengths only.
 
+**Set `DB` first — an unset one does not fail.** Every snippet below reads
+`"$DB"`; `sqlite3 "" ".backup /tmp/diag.db"` opens a transient in-memory
+database, backs *that* up and exits 0, leaving a 4 KiB file with no tables. The
+diagnostics now say so by name rather than reporting a missing table, but the
+cheaper fix is to set it:
+
+```bash
+DB=$(jq -r .storage.path config.json)   # or read storage.path by hand
+test -s "$DB" || echo "DB is not a file: $DB"
+```
+
 ```bash
 sqlite3 "$DB" ".backup /tmp/diag.db"        # never read the live WAL directly
 CGO_ENABLED=1 DIAG_DB=/tmp/diag.db DIAG_PSKS="<base64>,<base64>" \
@@ -642,6 +653,10 @@ of any plaintext run. Map reports are skipped -- unencrypted by design
 on the board, is `docs/firmware-config.md` §11 A's `mqtt.encryption_enabled`
 row; a rotation afterwards does not un-publish what already went out in the
 clear.
+
+It reports rather than asserts: a deployment that did once run with
+`mqtt.encryption_enabled = false` should not carry a red test forever for a fact
+it cannot change. The counts are the answer.
 
 Why SQL alone cannot answer it: a plaintext frame's `decode_status` is
 `decoded`, its `text_messages` row is readable, and every counter looks normal
