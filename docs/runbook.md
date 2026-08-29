@@ -664,6 +664,46 @@ USB (`meshtastic --port <serial> --noproto`) and send one uniquely-worded messag
 on that channel. `MQTT Publish msh/...` means the packet left the board and the
 problem is server-side; no MQTT line at all means the board never uplinked it.
 
+## 8.2. Which channel did a message actually go out on?
+
+Do not infer it from the command. `--ch-index N` is a **numeric index into that
+particular board's channel list**, and nothing keeps two boards' lists in the
+same order: index 1 can be one channel at one site and another at the other. A
+companion app sends on the channel the operator picked **by name**. So "the CLI
+and the app disagree" is usually two different channels, not two different
+behaviours — and a channel index is invisible in every symptom.
+
+`brokerd` can answer it exactly, because an uplinked frame carries the channel
+name in its topic. Send one uniquely-worded message each way, then:
+
+```bash
+sqlite3 "file:$DB?mode=ro" \
+  "SELECT r.received_at, r.board_id, r.decode_status,
+          COALESCE(t.channel_name, r.channel_segment) AS channel,
+          COALESCE(r.portnum_name,''), COALESCE(t.text,'')
+     FROM raw_frames r LEFT JOIN text_messages t ON t.raw_frame_id = r.id
+    ORDER BY r.id DESC LIMIT 10;"
+```
+
+What the answers mean:
+
+- **Different `channel` values for the two sends** → the index and the app's
+  selection are not the same channel. Everything downstream followed from that.
+- **`decode_status = pki_encrypted`** → that send was a **direct message**, not a
+  channel broadcast: firmware ≥2.5 encrypts DMs per node pair, so it reaches its
+  addressee regardless of the channel's state and proves nothing about the
+  channel (`docs/protocol-spec.md` §3). An app test done by tapping a node is
+  this, and it is the easiest way to conclude a broken channel works.
+- **No new row for one of them** → that send went out on a channel with
+  `uplink_enabled` off, or on the primary channel, which is never uplinked
+  (`docs/firmware-config.md` §7).
+
+One more trap on the *receiving* side, from §8's table: a node keeps no history
+and the first Phone-API client to connect drains its 32-entry queue —
+`meshtastic --host`/`--port` included. Checking reception with the CLI can
+therefore be what stops the app from ever showing the message. Connect the app
+first, and treat `text_messages` as the record.
+
 ## 9. Routine operations (once running)
 
 - Check the backup schedule for `brokerd`'s SQLite archive (ADR-7,
