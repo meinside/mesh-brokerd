@@ -530,179 +530,50 @@ meshtastic --port <gateway serial> --noproto
 | A board reconnects every few minutes, log shows `i/o timeout` | `mochi-mqtt`'s read deadline is the client's own keepalive x 1.5, and Meshtastic advertises 15 s -- so 22 s of silence, one missed PING, ends the session. Common on a network that delays or drops packets (`docs/environment.md`) | Check the `client keepalive` log line for the requested value and the resulting deadline, then set `listener.keepalive_floor_seconds` (60 gives a 90 s deadline). This treats the symptom; the network path is the cause |
 | Startup logs `file permissions are looser than recommended` | A file holding message content or key material is readable beyond its owner (`docs/security.md`) | `chmod 600` the file, `chmod 700` the TLS cache directory. brokerd deliberately does not change it for you; if the mode is intentional the warning is the only cost |
 | A non-gateway node's packets never appear in `raw_frames`, though the gateway hears it over LoRa on a shared channel | The sender leaves `lora.config_ok_to_mqtt` at the default `false`, so the gateway declines to uplink another node's packet to a broker at a public IP (`docs/firmware-config.md` §16) | On the **sending** node: `meshtastic --port <serial> --set lora.config_ok_to_mqtt true`. To watch the cause directly, tail the gateway over USB (`--noproto`) for `MQTT onSend - Not forwarding packet due to DontMqttMeBro flag`; `--info` cannot show the before state, since `false` is omitted |
-| One private channel is delivered end to end while another is not | A per-channel fault: the working channel already rules out everything node-global (`mqtt.address`, credentials, TLS, `lora.ignore_mqtt`, region/preset). What is left is that channel's own name/PSK on one participant, its `uplink_enabled`/`downlink_enabled`, its position as channel 0, `brokerd`'s `channels[]` entry, or an `acl_filters` that does not cover its topic | §8.1 |
+| One private channel is delivered end to end while another is not | A per-channel fault; everything node-global would break both | §8.1 |
 | `brokerd` process crashes entirely | A panic in storage/decoding wasn't caught by `recover()` (ADR-3, `docs/adr.md`) | Find the panic site from the logs and add a defense — this is exactly the blast-radius risk the design accepted, so treat it as high priority |
 
-## 8.1. One channel works and another does not
+## 8.1. Per-channel faults
 
-Start from what the working channel proves. Both channels share one MQTT
-session, one account, one radio and one node-level config, so a fault in
-`mqtt.address`, `mqtt.tls_enabled`, the credentials, `mqtt.root`,
-`lora.ignore_mqtt`, `lora.region`/`modem_preset` or (for a gateway's own
-traffic) `lora.config_ok_to_mqtt` would break **both**. It does not, so none of
-those is the cause, and the useful question is which *per-channel* thing differs.
+When one channel is delivered end to end and another is not, everything
+node-global is already ruled out: `mqtt.address`, credentials, TLS, `mqtt.root`,
+`lora.ignore_mqtt` and `lora.region`/`modem_preset` would break both channels or
+neither. What differs is per channel, and these are the facts needed to tell the
+cases apart.
 
-There are five, and steps 1–2 tell them apart without touching a board.
+- **`uplink_enabled` and `downlink_enabled` are independent**, so a board can
+  receive a channel correctly and never publish on it, or the reverse.
+- **A board subscribes one filter per channel** it holds with `downlink_enabled`
+  (`docs/protocol-spec.md` §1.0.1), reported as `board_subscriptions`
+  (`docs/monitoring-api.md` §4.1). A channel missing from one board's filter set
+  is missing on that board, or has downlink off — nothing else reports this.
+- **A subscription proves the *name*, never the PSK.** A channel is identified on
+  the wire by a hash of name + PSK, which no topic carries: a board subscribed
+  under the right name with the wrong key receives every frame and matches none.
+  What settles it is that board publishing on the channel — `decoded` means the
+  keys agree, `decrypt_failed` means they do not.
+- **`--ch-index N` indexes that board's channel list**, whose order is not the
+  same on every board, while an app sends on the channel picked by name. The
+  channel a message actually used is in its topic, so `brokerd` can name it:
 
-**Step 1 — ask the database which boards published it, and what `brokerd` made
-of it.** This separates "never arrived" from "arrived and could not be read",
-which look identical on the monitoring page:
+  ```bash
+  sqlite3 "file:$DB?mode=ro" \
+    "SELECT r.received_at, r.board_id, r.decode_status,
+            COALESCE(t.channel_name, r.channel_segment) AS channel,
+            COALESCE(t.text,'')
+       FROM raw_frames r LEFT JOIN text_messages t ON t.raw_frame_id = r.id
+      ORDER BY r.id DESC LIMIT 10;"
+  ```
 
-```bash
-sqlite3 "$DB" "SELECT board_id, channel_segment, decode_status, COUNT(*),
-                      MAX(received_at)
-                 FROM raw_frames GROUP BY 1,2,3 ORDER BY 1,2;"
-```
-
-- **The channel is missing for a board** → that board never published it.
-  Board-side (step 4) or its ACL (step 3).
-- **Rows exist with `unknown_channel` or `decrypt_failed`** → the frames arrive;
-  `brokerd` holds no key under the name the topic carries. Step 2. Cross-site
-  relay is unaffected by this, because relaying encrypted bytes is plain MQTT
-  pub/sub gated only by the ACL — so if delivery *also* fails, expect a second,
-  independent cause.
-- **Rows exist and are `decoded`** → `brokerd` is fine and the fault is on the
-  receiving board: step 4, `downlink_enabled` first.
-
-Nothing captured is lost either way: once the name/key is right, `-reprocess`
-re-decodes the frames already stored (§9.5, ADR-3).
-
-**Step 2 — ask `brokerd` what it thinks the channels and ACLs are.** It names
-every board, every `acl_filters` entry and every channel with its length, and
-opens no listener or database:
-
-```bash
-set -a; . ./.env; set +a                       # brokerd reads the environment,
-mesh-brokerd -check-config -config ./config.json   # never .env itself
-```
-
-Any hand-run subcommand needs that first line. Under systemd the unit's
-`EnvironmentFile=` supplies the same values, so a secret can be visibly present
-in `.env` and still be missing from a shell you started yourself — the failure
-names one variable and looks like a config fault.
-
-Compare the printed channel name **byte for byte** against `channel_segment`
-from step 1. `brokerd` matches that segment verbatim and never parses it
-(`docs/protocol-spec.md` §1), so one differing character is a total mismatch
-rather than a near miss.
-
-**Step 3 — ACL, and what the board actually asked to receive.** A filter that
-does not cover the channel's topic makes mochi-mqtt refuse that board's
-publishes *and* subscribes for it, silently, at QoS 0. And a board that is
-missing the channel, or holds it with `downlink_enabled` off, never subscribes
-to its topic at all — nothing refuses that, nothing logs it, and the site simply
-never receives the channel:
-
-```bash
-curl -s -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:9101/api/v1/stats/messages \
-  | jq '{acl_denials_total, board_subscriptions}'
-```
-
-`board_subscriptions` is the decisive one when the receiving board is remote:
-compare the filters the two boards subscribed to. A board subscribes one filter
-per channel it holds with `downlink_enabled` (`docs/protocol-spec.md` §1.0.1), so
-a channel present on one board's set and absent from the other's is the fault,
-located without touching a board. An `acl_filters` of `msh/pvt/2/e/#` covers
-every channel; a per-channel filter (`msh/pvt/2/e/<name>/#`) has to be repeated
-for each one.
-
-**Step 4 — if both boards subscribe to it, suspect the PSK.** A subscription
-proves the receiving board holds a channel of that *name* with downlink enabled.
-The PSK never appears in a topic, and on the wire a channel is identified by a
-hash of **name + PSK**: a board subscribed under the right name with the wrong
-key receives every frame and matches none of them. Nothing logs that, on either
-side.
-
-The cheap way to test it is to make the *receiving* site publish on the channel
-in question, then read what arrived:
-
-```bash
-sqlite3 "file:$DB?mode=ro" \
-  "SELECT board_id, decode_status, COUNT(*), MAX(received_at) FROM raw_frames
-     WHERE channel_segment='<channel>' GROUP BY 1,2;"
-```
-
-- a row for that board with `decoded` → both sides hold the same key, and the
-  fault is neither the key nor `brokerd`;
-- a row with **`decrypt_failed`** → that board's copy of the channel has a
-  **different PSK**. Re-share the channel from a working board (`--qr-all` →
-  `--seturl`) rather than retyping the key;
-- **no row at all** → that channel's `uplink_enabled` is off on that board.
-  Uplink and downlink are independent flags, so a board can subscribe correctly
-  and still never publish.
-
-Also read `downlink_missed_total` for that board in the same API response: it
-counts frames published while the board held no connection, which are frames
-QoS 0 and `cleanSession` leave nothing to replay
-(`docs/architecture.md` §8.1). A board that reconnects often can miss a
-low-rate channel entirely while everything else looks correct.
-
-**Step 5 — the board that fails, per channel.** In `--info`'s channel block,
-for that channel only:
-
-- the **name and PSK are byte-identical** to the working participants'. Copy the
-  URL from a board that works (`--qr-all`) instead of retyping — channel
-  matching is by hash of name + PSK, so one character makes the packet
-  unmatchable and silently undecryptable;
-- `uplinkEnabled` / `downlinkEnabled` are present (absent means off, §13);
-- it is **not channel index 0**. The primary channel is deliberately never
-  relayed (`docs/firmware-config.md` §7), so a private channel that ended up at
-  index 0 on one board can never uplink or downlink there whatever else is set.
-
-**Step 6 — check the name length.** `ChannelSettings.name` holds 11 usable
-characters, and the Python CLI refuses more than 10 on the `--ch-add` path while
-`--ch-set name` does not check at all (`docs/firmware-config.md` §12). An
-11-character name is therefore the one length where two clients can disagree —
-one storing 11 characters, another 10 — and a truncated copy hashes differently,
-so it matches nothing. Names of 10 characters or fewer avoid the question
-entirely; if a channel at 11 is the one misbehaving, recreate it shorter on every
-participant before debugging anything else.
-
-Last resort, when steps 1–6 all look right: tail the *publishing* gateway over
-USB (`meshtastic --port <serial> --noproto`) and send one uniquely-worded message
-on that channel. `MQTT Publish msh/...` means the packet left the board and the
-problem is server-side; no MQTT line at all means the board never uplinked it.
-
-## 8.2. Which channel did a message actually go out on?
-
-Do not infer it from the command. `--ch-index N` is a **numeric index into that
-particular board's channel list**, and nothing keeps two boards' lists in the
-same order: index 1 can be one channel at one site and another at the other. A
-companion app sends on the channel the operator picked **by name**. So "the CLI
-and the app disagree" is usually two different channels, not two different
-behaviours — and a channel index is invisible in every symptom.
-
-`brokerd` can answer it exactly, because an uplinked frame carries the channel
-name in its topic. Send one uniquely-worded message each way, then:
-
-```bash
-sqlite3 "file:$DB?mode=ro" \
-  "SELECT r.received_at, r.board_id, r.decode_status,
-          COALESCE(t.channel_name, r.channel_segment) AS channel,
-          COALESCE(r.portnum_name,''), COALESCE(t.text,'')
-     FROM raw_frames r LEFT JOIN text_messages t ON t.raw_frame_id = r.id
-    ORDER BY r.id DESC LIMIT 10;"
-```
-
-What the answers mean:
-
-- **Different `channel` values for the two sends** → the index and the app's
-  selection are not the same channel. Everything downstream followed from that.
-- **`decode_status = pki_encrypted`** → that send was a **direct message**, not a
-  channel broadcast: firmware ≥2.5 encrypts DMs per node pair, so it reaches its
-  addressee regardless of the channel's state and proves nothing about the
-  channel (`docs/protocol-spec.md` §3). An app test done by tapping a node is
-  this, and it is the easiest way to conclude a broken channel works.
-- **No new row for one of them** → that send went out on a channel with
-  `uplink_enabled` off, or on the primary channel, which is never uplinked
+- **A direct message is not a channel test.** DMs are PKC-encrypted per node pair
+  (firmware ≥2.5) and reach their addressee whatever the channel's state; an app
+  test done by tapping a node is one. `brokerd` stores them as `pki_encrypted`.
+- A private channel that ended up at **index 0** on a board can never uplink or
+  downlink there: the primary channel is deliberately never relayed
   (`docs/firmware-config.md` §7).
-
-One more trap on the *receiving* side, from §8's table: a node keeps no history
-and the first Phone-API client to connect drains its 32-entry queue —
-`meshtastic --host`/`--port` included. Checking reception with the CLI can
-therefore be what stops the app from ever showing the message. Connect the app
-first, and treat `text_messages` as the record.
+- Frames published while a board held no connection are lost to it and counted in
+  `downlink_missed_total`; QoS 0 with `cleanSession` leaves nothing to replay.
+  A low-rate channel can be missed entirely this way.
 
 ## 9. Routine operations (once running)
 
@@ -796,11 +667,8 @@ NODEINFO" is therefore blind to those frames, and reading its empty result as
 reports the portnum it finds. Keys come from the environment; names are reported
 as lengths only.
 
-**Set `DB` first — an unset one does not fail.** Every snippet below reads
-`"$DB"`; `sqlite3 "" ".backup /tmp/diag.db"` opens a transient in-memory
-database, backs *that* up and exits 0, leaving a 4 KiB file with no tables. The
-diagnostics now say so by name rather than reporting a missing table, but the
-cheaper fix is to set it:
+**Set `DB` first.** `sqlite3 "" ".backup /tmp/diag.db"` opens a transient
+in-memory database, backs *that* up and exits 0, leaving a file with no tables:
 
 ```bash
 DB=$(jq -r .storage.path config.json)   # or read storage.path by hand
@@ -819,12 +687,12 @@ sent under a key this deployment never had -- which is itself the answer.
 
 ## 9.5.2. Finding out whether a board ever uplinked in the clear
 
-`plaintext_uplinks_total` (`docs/monitoring-api.md` §4.1) is in-memory: it
-speaks only for the frames the running process has seen, and only exists in a
-build that has the check. The history is answerable anyway, because
-`raw_frames.payload` is the unmodified MQTT payload and "arrived in the clear"
-is a property of those bytes -- `MeshPacket`'s `payload_variant` is `decoded`
-rather than `encrypted`. **No channel key is needed for this one.**
+`plaintext_uplinks_total` (`docs/monitoring-api.md` §4.1) is in-memory, so it
+speaks only for the frames the running process has seen. The history is
+answerable from `raw_frames.payload`: "arrived in the clear" is a property of
+those bytes (`MeshPacket`'s `payload_variant` is `decoded` rather than
+`encrypted`), and no channel key is needed to read it. SQL alone cannot — such a
+frame is identical in every stored column to one `brokerd` decrypted itself.
 
 ```bash
 sqlite3 "$DB" ".backup /tmp/diag.db"        # never read the live WAL directly
@@ -832,20 +700,11 @@ CGO_ENABLED=1 DIAG_DB=/tmp/diag.db \
   go test -tags diag ./internal/decode/ -run TestDiagPlaintextUplinks -v
 ```
 
-It prints encrypted/plaintext counts per board and channel, and the time range
-of any plaintext run. Map reports are skipped -- unencrypted by design
-(`docs/firmware-config.md` §14). What a non-zero count means, and what to change
-on the board, is `docs/firmware-config.md` §11 A's `mqtt.encryption_enabled`
-row; a rotation afterwards does not un-publish what already went out in the
-clear.
-
-It reports rather than asserts: a deployment that did once run with
-`mqtt.encryption_enabled = false` should not carry a red test forever for a fact
-it cannot change. The counts are the answer.
-
-Why SQL alone cannot answer it: a plaintext frame's `decode_status` is
-`decoded`, its `text_messages` row is readable, and every counter looks normal
--- identical in every stored column to a frame `brokerd` decrypted itself.
+It reports encrypted/plaintext counts per board and channel and the time range of
+any plaintext run, and asserts nothing. Map reports are skipped (unencrypted by
+design, `docs/firmware-config.md` §14). What to change on the board is §11 A's
+`mqtt.encryption_enabled` row; a rotation afterwards does not un-publish what
+already went out in the clear.
 
 ## 9.6. Opening the monitoring page
 
