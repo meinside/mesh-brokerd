@@ -572,26 +572,38 @@ every board, every `acl_filters` entry and every channel with its length, and
 opens no listener or database:
 
 ```bash
-mesh-brokerd -check-config -config ./config.json
+set -a; . ./.env; set +a                       # brokerd reads the environment,
+mesh-brokerd -check-config -config ./config.json   # never .env itself
 ```
+
+Any hand-run subcommand needs that first line. Under systemd the unit's
+`EnvironmentFile=` supplies the same values, so a secret can be visibly present
+in `.env` and still be missing from a shell you started yourself — the failure
+names one variable and looks like a config fault.
 
 Compare the printed channel name **byte for byte** against `channel_segment`
 from step 1. `brokerd` matches that segment verbatim and never parses it
 (`docs/protocol-spec.md` §1), so one differing character is a total mismatch
 rather than a near miss.
 
-**Step 3 — ACL.** A filter that does not cover the channel's topic makes
-mochi-mqtt refuse that board's publishes *and* subscribes for it, silently, at
-QoS 0 — which alone explains both "nothing stored from this board" and "the
-other site never receives it":
+**Step 3 — ACL, and what the board actually asked to receive.** A filter that
+does not cover the channel's topic makes mochi-mqtt refuse that board's
+publishes *and* subscribes for it, silently, at QoS 0. And a board that is
+missing the channel, or holds it with `downlink_enabled` off, never subscribes
+to its topic at all — nothing refuses that, nothing logs it, and the site simply
+never receives the channel:
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:9101/api/v1/stats/messages | jq .acl_denials_total
+  http://127.0.0.1:9101/api/v1/stats/messages \
+  | jq '{acl_denials_total, board_subscriptions}'
 ```
 
-A per-channel filter (`msh/pvt/2/e/<name>/#`) has to be repeated for every
-channel; `msh/pvt/2/e/#` covers them all.
+`board_subscriptions` is the decisive one when the receiving board is remote:
+compare the filters the two boards subscribed to. A channel present on one and
+absent on the other is the fault, located without touching a board. An
+`acl_filters` of `msh/pvt/2/e/#` covers every channel; a per-channel filter
+(`msh/pvt/2/e/<name>/#`) has to be repeated for each one.
 
 **Step 4 — the board that fails, per channel.** In `--info`'s channel block,
 for that channel only:
@@ -644,6 +656,9 @@ build wrote. `raw_frames.payload` still holds the bytes, so they can be
 filled in (`docs/storage-schema.md` §7).
 
 ```sh
+# 0. brokerd reads its environment, not .env -- source it for a hand run.
+set -a; . ./.env; set +a
+
 # 1. See what would change. Writes nothing.
 mesh-brokerd -config <path>/config.json -reprocess dry-run
 

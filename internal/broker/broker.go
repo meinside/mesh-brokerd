@@ -21,13 +21,14 @@ import (
 // Broker owns the embedded mochi-mqtt server, its hooks, and the
 // storage worker goroutine (docs/architecture.md §3).
 type Broker struct {
-	server   *mqtt.Server
-	relay    *RelayHook
-	worker   *Worker
-	noise    *NoiseFilter
-	nodeID   *NodeIDChecker
-	aclLog   *ACLDenialLogger
-	presence *PresenceHook
+	server        *mqtt.Server
+	relay         *RelayHook
+	worker        *Worker
+	noise         *NoiseFilter
+	nodeID        *NodeIDChecker
+	aclLog        *ACLDenialLogger
+	presence      *PresenceHook
+	subscriptions *SubscriptionTracker
 
 	shutdownTimeout time.Duration
 	log             *slog.Logger
@@ -150,6 +151,15 @@ func New(opts Options) (*Broker, error) {
 		return nil, fmt.Errorf("broker: adding presence hook: %w", err)
 	}
 
+	// Records what each board asked to receive. An absent subscription is
+	// refused by nothing and logged by nothing, so without this a board that
+	// silently never subscribes to a channel is indistinguishable from one
+	// that does (internal/broker.SubscriptionTracker).
+	subscriptions := NewSubscriptionTracker(log)
+	if err := server.AddHook(subscriptions, nil); err != nil {
+		return nil, fmt.Errorf("broker: adding subscription tracker: %w", err)
+	}
+
 	relay := NewRelayHook(opts.QueueSize)
 	relay.SetPresence(presence)
 	if opts.Hooks != nil {
@@ -188,6 +198,7 @@ func New(opts Options) (*Broker, error) {
 		nodeID:          nodeIDChecker,
 		aclLog:          aclDenials,
 		presence:        presence,
+		subscriptions:   subscriptions,
 		shutdownTimeout: opts.ShutdownTimeout,
 		log:             log,
 	}, nil
@@ -261,6 +272,10 @@ func (b *Broker) SessionTakeovers() map[string]int64 { return b.presence.Session
 // ConnectedBoards exposes the currently-connected board usernames
 // (docs/monitoring-api.md's connected_boards).
 func (b *Broker) ConnectedBoards() []string { return b.presence.Connected() }
+
+// BoardSubscriptions exposes SubscriptionTracker.Subscriptions for monitoring
+// (docs/monitoring-api.md's board_subscriptions).
+func (b *Broker) BoardSubscriptions() map[string][]string { return b.subscriptions.Subscriptions() }
 
 // DecodeStatusCounts exposes Worker.DecodeStatusCounts for monitoring.
 func (b *Broker) DecodeStatusCounts() map[string]int64 { return b.worker.DecodeStatusCounts() }

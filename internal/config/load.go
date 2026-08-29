@@ -240,13 +240,23 @@ func Load(path string) (*Config, error) {
 // requireEnv resolves envVarName from the environment, failing fast
 // (docs/brokerd-config.md's "Validation rules") if the *_env config key
 // itself is empty, or the named variable is unset/empty.
+//
+// The "unset or empty" message names `.env` deliberately. brokerd reads its
+// environment and never parses that file (README, docs/deployment.md): under
+// systemd the unit's EnvironmentFile= supplies it, so a hand-run command
+// (-check-config, -reprocess) is the one context where the value is visibly
+// present in `.env` and absent from the process. Reporting only "is unset"
+// there invites reading it as a config or deployment fault.
 func requireEnv(envVarName, fieldPath string) (string, error) {
 	if envVarName == "" {
 		return "", fmt.Errorf("config: %s is required", fieldPath)
 	}
 	v, ok := os.LookupEnv(envVarName)
 	if !ok || v == "" {
-		return "", fmt.Errorf("config: environment variable %s (referenced by %s) is unset or empty", envVarName, fieldPath)
+		return "", fmt.Errorf("config: environment variable %s (referenced by %s) is unset or empty"+
+			" -- brokerd reads its environment, never .env itself, so a value present in that file"+
+			" still has to be exported: `set -a; . ./.env; set +a` before running this by hand"+
+			" (systemd supplies it via EnvironmentFile=)", envVarName, fieldPath)
 	}
 	return v, nil
 }

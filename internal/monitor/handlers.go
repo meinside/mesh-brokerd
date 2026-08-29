@@ -109,6 +109,11 @@ func (s *Server) handleStatsMessages(w http.ResponseWriter, r *http.Request) {
 		"downlink_missed_total":   s.broker.DownlinkMissed(),
 		"session_takeovers_total": s.broker.SessionTakeovers(),
 		"connected_boards":        s.broker.ConnectedBoards(),
+		// What each board asked to *receive*. A board that never subscribes to
+		// a channel's topic -- because the channel is missing there, or has
+		// downlink_enabled off -- is refused by nothing and logged by nothing,
+		// so this is the only server-side evidence of it.
+		"board_subscriptions": s.broker.BoardSubscriptions(),
 		// Event-hook counters (ADR-17). Present as an empty object when
 		// event_hooks is not configured, so a consumer can tell "no hooks"
 		// from "hooks that never fired".

@@ -108,6 +108,13 @@ func TestLoad_MissingEnvVar(t *testing.T) {
 	if !strings.Contains(err.Error(), "TEST_PVT_PSK") {
 		t.Errorf("error %q does not mention the missing env var", err)
 	}
+	// The value is usually sitting in .env, visibly present, while the process
+	// does not have it: brokerd never parses that file. Reporting only "unset"
+	// there reads as a config or deployment fault, and cost a real debugging
+	// detour on a hand-run -check-config.
+	if !strings.Contains(err.Error(), ".env") {
+		t.Errorf("error %q does not say that .env is not read and has to be sourced", err)
+	}
 }
 
 func TestLoad_BadPSKLength(t *testing.T) {

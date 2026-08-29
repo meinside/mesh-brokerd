@@ -32,8 +32,10 @@ import (
 //
 // What the number means, precisely: "frames published while a configured
 // board held no connection". It does not model subscription filters -- every
-// board here subscribes to the same private-channel prefix -- and it never
-// counts the publishing board, which demonstrably has the frame.
+// board here has been observed subscribing to the same private-channel prefix,
+// and SubscriptionTracker (board_subscriptions) is what makes that checkable
+// rather than assumed -- and it never counts the publishing board, which
+// demonstrably has the frame.
 //
 // Report-only, like the rest of brokerd's checks: OnConnect always returns
 // nil, because mochi-mqtt treats a non-nil error there as grounds to refuse
