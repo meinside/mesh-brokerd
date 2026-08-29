@@ -600,12 +600,45 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 ```
 
 `board_subscriptions` is the decisive one when the receiving board is remote:
-compare the filters the two boards subscribed to. A channel present on one and
-absent on the other is the fault, located without touching a board. An
-`acl_filters` of `msh/pvt/2/e/#` covers every channel; a per-channel filter
-(`msh/pvt/2/e/<name>/#`) has to be repeated for each one.
+compare the filters the two boards subscribed to. A board subscribes one filter
+per channel it holds with `downlink_enabled` (`docs/protocol-spec.md` §1.0.1), so
+a channel present on one board's set and absent from the other's is the fault,
+located without touching a board. An `acl_filters` of `msh/pvt/2/e/#` covers
+every channel; a per-channel filter (`msh/pvt/2/e/<name>/#`) has to be repeated
+for each one.
 
-**Step 4 — the board that fails, per channel.** In `--info`'s channel block,
+**Step 4 — if both boards subscribe to it, suspect the PSK.** A subscription
+proves the receiving board holds a channel of that *name* with downlink enabled.
+The PSK never appears in a topic, and on the wire a channel is identified by a
+hash of **name + PSK**: a board subscribed under the right name with the wrong
+key receives every frame and matches none of them. Nothing logs that, on either
+side.
+
+The cheap way to test it is to make the *receiving* site publish on the channel
+in question, then read what arrived:
+
+```bash
+sqlite3 "file:$DB?mode=ro" \
+  "SELECT board_id, decode_status, COUNT(*), MAX(received_at) FROM raw_frames
+     WHERE channel_segment='<channel>' GROUP BY 1,2;"
+```
+
+- a row for that board with `decoded` → both sides hold the same key, and the
+  fault is neither the key nor `brokerd`;
+- a row with **`decrypt_failed`** → that board's copy of the channel has a
+  **different PSK**. Re-share the channel from a working board (`--qr-all` →
+  `--seturl`) rather than retyping the key;
+- **no row at all** → that channel's `uplink_enabled` is off on that board.
+  Uplink and downlink are independent flags, so a board can subscribe correctly
+  and still never publish.
+
+Also read `downlink_missed_total` for that board in the same API response: it
+counts frames published while the board held no connection, which are frames
+QoS 0 and `cleanSession` leave nothing to replay
+(`docs/architecture.md` §8.1). A board that reconnects often can miss a
+low-rate channel entirely while everything else looks correct.
+
+**Step 5 — the board that fails, per channel.** In `--info`'s channel block,
 for that channel only:
 
 - the **name and PSK are byte-identical** to the working participants'. Copy the
@@ -617,7 +650,7 @@ for that channel only:
   relayed (`docs/firmware-config.md` §7), so a private channel that ended up at
   index 0 on one board can never uplink or downlink there whatever else is set.
 
-**Step 5 — check the name length.** `ChannelSettings.name` holds 11 usable
+**Step 6 — check the name length.** `ChannelSettings.name` holds 11 usable
 characters, and the Python CLI refuses more than 10 on the `--ch-add` path while
 `--ch-set name` does not check at all (`docs/firmware-config.md` §12). An
 11-character name is therefore the one length where two clients can disagree —
@@ -626,7 +659,7 @@ so it matches nothing. Names of 10 characters or fewer avoid the question
 entirely; if a channel at 11 is the one misbehaving, recreate it shorter on every
 participant before debugging anything else.
 
-Last resort, when steps 1–5 all look right: tail the *publishing* gateway over
+Last resort, when steps 1–6 all look right: tail the *publishing* gateway over
 USB (`meshtastic --port <serial> --noproto`) and send one uniquely-worded message
 on that channel. `MQTT Publish msh/...` means the packet left the board and the
 problem is server-side; no MQTT line at all means the board never uplinked it.

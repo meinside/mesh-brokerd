@@ -28,6 +28,28 @@ that's `msh/pvt/2/e/{channel}/{node}`:
   number. Not required for decode correctness (the payload carries its
   own `gateway_id`/`from` fields redundantly).
 
+### 1.0.1. What a board subscribes to
+
+A board subscribes **one filter per channel** it holds with
+`downlink_enabled`, of the form `{mqtt.root}/2/e/{channel}/+` — not a single
+wildcard covering every channel. Observed on two live boards through
+`board_subscriptions` (`docs/monitoring-api.md` §4.1), which reported exactly
+three filters each, one per configured channel plus `PKI`.
+
+Two things follow, and both matter when a channel is delivered to one site and
+not another (`docs/runbook.md` §8.1):
+
+- **A missing or downlink-disabled channel is visible from the server**: its
+  filter is simply absent from that board's set, and nothing else reports it —
+  no refusal, no log.
+- **The reverse is not true.** A filter's presence proves the board holds a
+  channel of that *name* with downlink enabled. It says nothing about the
+  **PSK**, which never appears in a topic: a board subscribed under the right
+  name with the wrong key receives every frame and silently matches none of
+  them, since the channel is identified on the wire by a hash of name + PSK.
+- `PKI` appears alongside the configured channels. Direct messages are
+  PKC-encrypted per node pair (§3), and this project holds no key for them.
+
 ### 1.1. The second grammar: map reports
 
 ```
