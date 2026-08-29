@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/meinside/mesh-brokerd/internal/config"
+	"github.com/meinside/mesh-brokerd/internal/decode"
 	"github.com/meinside/mesh-brokerd/internal/hook"
 )
 
@@ -216,5 +219,54 @@ func TestSampleConfigTemplatesRender(t *testing.T) {
 	}
 	if !found {
 		t.Error("no sample template shows {{or .FromName .FromID}}, the one expression that names a sender whether or not a name is known")
+	}
+}
+
+// TestReportConfig_NamesBoardsAndChannels pins what -check-config must print.
+// A count of channels cannot answer the question the flag exists for -- "is this
+// valid file actually wired to what the boards send" -- because brokerd matches
+// channels[].name against the topic's channel segment verbatim, and an
+// acl_filters entry that misses a channel's topic makes every publish and
+// subscribe for it fail silently at QoS 0. Both were invisible while this
+// printed only counts, and README already promised the names.
+func TestReportConfig_NamesBoardsAndChannels(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	var psk [decode.PSKSize]byte
+	for i := range psk {
+		psk[i] = byte(i + 1)
+	}
+	cfg := &config.Config{
+		Listener:   config.Listener{MQTTAddr: ":8883"},
+		Monitoring: config.Monitoring{ListenAddr: "127.0.0.1:9101"},
+		Storage:    config.Storage{Path: "/tmp/brokerd.db"},
+		Boards: []config.Board{
+			{ID: "alpha", Username: "alpha", ACLFilters: []string{"msh/pvt/2/e/#"}},
+		},
+		Channels: []config.Channel{
+			{Name: "pvt", PSK: psk},
+			{Name: "elevenchars", PSK: psk},
+		},
+	}
+
+	reportConfig(cfg, log)
+	out := buf.String()
+
+	for _, want := range []string{
+		"alpha",         // the board is named, not just counted
+		"msh/pvt/2/e/#", // and so is the ACL that decides what it may publish
+		"name=pvt",      // every channel by name
+		"name=elevenchars",
+		"name_len=11", // the length, since 11 is the cap and --ch-add refuses >10
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("-check-config output does not mention %q:\n%s", want, out)
+		}
+	}
+	// The PSK is resolved by then; printing it would put key material in an
+	// operator's terminal and scrollback.
+	if strings.Contains(out, "0102030405") || strings.Contains(out, base64.StdEncoding.EncodeToString(psk[:])) {
+		t.Errorf("-check-config printed channel key material:\n%s", out)
 	}
 }

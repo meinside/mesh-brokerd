@@ -493,6 +493,17 @@ func runReprocess(store *storage.Store, cfg *config.Config, mode string, log *sl
 // what is enabled and what each hook target would receive, because the common
 // mistake is not an invalid file but a valid one that matches nothing: a target
 // filtered to a portnum the mesh never sends, or left enabled: false.
+//
+// Boards and channels are named individually rather than counted, because the
+// same class of mistake applies to them and is otherwise invisible: brokerd
+// matches channels[].name against the topic's channel segment verbatim
+// (docs/protocol-spec.md §1), so a channel that is misspelled, or renamed on the
+// boards, or simply never added, produces a perfectly valid config under which
+// that channel's traffic can only ever be stored as opaque raw_frames. A count
+// of "3 channels" cannot show that; the names can. Same for acl_filters: a
+// filter that does not cover a channel's topic makes mochi-mqtt refuse the
+// board's publishes and subscribes for it silently, at QoS 0
+// (docs/security.md §3).
 func reportConfig(cfg *config.Config, log *slog.Logger) {
 	log.Info("config is valid",
 		"mqtt_addr", cfg.Listener.MQTTAddr,
@@ -500,6 +511,21 @@ func reportConfig(cfg *config.Config, log *slog.Logger) {
 		"channels", len(cfg.Channels),
 		"monitoring_addr", cfg.Monitoring.ListenAddr,
 		"storage", cfg.Storage.Path)
+
+	for _, b := range cfg.Boards {
+		log.Info("board", "id", b.ID, "username", b.Username,
+			"acl_filters", strings.Join(b.ACLFilters, ","),
+			"node_id", b.NodeID)
+	}
+	// The name is printed with its length because a channel name is capped at
+	// 11 usable characters and the CLI's --ch-add path refuses more than 10
+	// (docs/firmware-config.md §12): a name that disagrees with the boards by
+	// one truncated character is the failure this makes visible. Never the PSK
+	// itself -- only that one was resolved, which config.Load already
+	// guarantees.
+	for _, ch := range cfg.Channels {
+		log.Info("channel", "name", ch.Name, "name_len", len(ch.Name), "psk", "resolved")
+	}
 
 	if cfg.OutboundRelay.Enabled {
 		for _, r := range cfg.OutboundRelay.Rules {

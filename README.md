@@ -107,9 +107,12 @@ startup fails naming the one that is unset.
 
 `-check-config` loads the config, resolves every `*_env` secret, renders each
 event-hook template against a sample event and prints what is enabled — every
-board, channel, relay rule and hook target — without opening a listener, a
-database or the network. A config is more often valid but inert than invalid,
-so this reports what *would* happen rather than only whether it parses.
+board with its ACL filters, every channel by name, every relay rule and hook
+target — without opening a listener, a database or the network. A config is more
+often valid but inert than invalid, so this reports what *would* happen rather
+than only whether it parses: a channel whose name does not match what the boards
+put in the topic is a perfectly valid config under which that channel can only
+ever be stored as opaque frames.
 
 Two files are needed and neither belongs in version control: `config.json`
 (structure, ports, rules) and the secrets it names indirectly, which are read

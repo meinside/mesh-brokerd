@@ -530,7 +530,94 @@ meshtastic --port <gateway serial> --noproto
 | A board reconnects every few minutes, log shows `i/o timeout` | `mochi-mqtt`'s read deadline is the client's own keepalive x 1.5, and Meshtastic advertises 15 s -- so 22 s of silence, one missed PING, ends the session. Common on a network that delays or drops packets (`docs/environment.md`) | Check the `client keepalive` log line for the requested value and the resulting deadline, then set `listener.keepalive_floor_seconds` (60 gives a 90 s deadline). This treats the symptom; the network path is the cause |
 | Startup logs `file permissions are looser than recommended` | A file holding message content or key material is readable beyond its owner (`docs/security.md`) | `chmod 600` the file, `chmod 700` the TLS cache directory. brokerd deliberately does not change it for you; if the mode is intentional the warning is the only cost |
 | A non-gateway node's packets never appear in `raw_frames`, though the gateway hears it over LoRa on a shared channel | The sender leaves `lora.config_ok_to_mqtt` at the default `false`, so the gateway declines to uplink another node's packet to a broker at a public IP (`docs/firmware-config.md` §16) | On the **sending** node: `meshtastic --port <serial> --set lora.config_ok_to_mqtt true`. To watch the cause directly, tail the gateway over USB (`--noproto`) for `MQTT onSend - Not forwarding packet due to DontMqttMeBro flag`; `--info` cannot show the before state, since `false` is omitted |
+| One private channel is delivered end to end while another is not | A per-channel fault: the working channel already rules out everything node-global (`mqtt.address`, credentials, TLS, `lora.ignore_mqtt`, region/preset). What is left is that channel's own name/PSK on one participant, its `uplink_enabled`/`downlink_enabled`, its position as channel 0, `brokerd`'s `channels[]` entry, or an `acl_filters` that does not cover its topic | §8.1 |
 | `brokerd` process crashes entirely | A panic in storage/decoding wasn't caught by `recover()` (ADR-3, `docs/adr.md`) | Find the panic site from the logs and add a defense — this is exactly the blast-radius risk the design accepted, so treat it as high priority |
+
+## 8.1. One channel works and another does not
+
+Start from what the working channel proves. Both channels share one MQTT
+session, one account, one radio and one node-level config, so a fault in
+`mqtt.address`, `mqtt.tls_enabled`, the credentials, `mqtt.root`,
+`lora.ignore_mqtt`, `lora.region`/`modem_preset` or (for a gateway's own
+traffic) `lora.config_ok_to_mqtt` would break **both**. It does not, so none of
+those is the cause, and the useful question is which *per-channel* thing differs.
+
+There are five, and steps 1–2 tell them apart without touching a board.
+
+**Step 1 — ask the database which boards published it, and what `brokerd` made
+of it.** This separates "never arrived" from "arrived and could not be read",
+which look identical on the monitoring page:
+
+```bash
+sqlite3 "$DB" "SELECT board_id, channel_segment, decode_status, COUNT(*),
+                      MAX(received_at)
+                 FROM raw_frames GROUP BY 1,2,3 ORDER BY 1,2;"
+```
+
+- **The channel is missing for a board** → that board never published it.
+  Board-side (step 4) or its ACL (step 3).
+- **Rows exist with `unknown_channel` or `decrypt_failed`** → the frames arrive;
+  `brokerd` holds no key under the name the topic carries. Step 2. Cross-site
+  relay is unaffected by this, because relaying encrypted bytes is plain MQTT
+  pub/sub gated only by the ACL — so if delivery *also* fails, expect a second,
+  independent cause.
+- **Rows exist and are `decoded`** → `brokerd` is fine and the fault is on the
+  receiving board: step 4, `downlink_enabled` first.
+
+Nothing captured is lost either way: once the name/key is right, `-reprocess`
+re-decodes the frames already stored (§9.5, ADR-3).
+
+**Step 2 — ask `brokerd` what it thinks the channels and ACLs are.** It names
+every board, every `acl_filters` entry and every channel with its length, and
+opens no listener or database:
+
+```bash
+mesh-brokerd -check-config -config ./config.json
+```
+
+Compare the printed channel name **byte for byte** against `channel_segment`
+from step 1. `brokerd` matches that segment verbatim and never parses it
+(`docs/protocol-spec.md` §1), so one differing character is a total mismatch
+rather than a near miss.
+
+**Step 3 — ACL.** A filter that does not cover the channel's topic makes
+mochi-mqtt refuse that board's publishes *and* subscribes for it, silently, at
+QoS 0 — which alone explains both "nothing stored from this board" and "the
+other site never receives it":
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:9101/api/v1/stats/messages | jq .acl_denials_total
+```
+
+A per-channel filter (`msh/pvt/2/e/<name>/#`) has to be repeated for every
+channel; `msh/pvt/2/e/#` covers them all.
+
+**Step 4 — the board that fails, per channel.** In `--info`'s channel block,
+for that channel only:
+
+- the **name and PSK are byte-identical** to the working participants'. Copy the
+  URL from a board that works (`--qr-all`) instead of retyping — channel
+  matching is by hash of name + PSK, so one character makes the packet
+  unmatchable and silently undecryptable;
+- `uplinkEnabled` / `downlinkEnabled` are present (absent means off, §13);
+- it is **not channel index 0**. The primary channel is deliberately never
+  relayed (`docs/firmware-config.md` §7), so a private channel that ended up at
+  index 0 on one board can never uplink or downlink there whatever else is set.
+
+**Step 5 — check the name length.** `ChannelSettings.name` holds 11 usable
+characters, and the Python CLI refuses more than 10 on the `--ch-add` path while
+`--ch-set name` does not check at all (`docs/firmware-config.md` §12). An
+11-character name is therefore the one length where two clients can disagree —
+one storing 11 characters, another 10 — and a truncated copy hashes differently,
+so it matches nothing. Names of 10 characters or fewer avoid the question
+entirely; if a channel at 11 is the one misbehaving, recreate it shorter on every
+participant before debugging anything else.
+
+Last resort, when steps 1–5 all look right: tail the *publishing* gateway over
+USB (`meshtastic --port <serial> --noproto`) and send one uniquely-worded message
+on that channel. `MQTT Publish msh/...` means the packet left the board and the
+problem is server-side; no MQTT line at all means the board never uplinked it.
 
 ## 9. Routine operations (once running)
 
