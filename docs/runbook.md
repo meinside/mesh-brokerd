@@ -570,7 +570,15 @@ cases apart.
   test done by tapping a node is one. `brokerd` stores them as `pki_encrypted`.
 - A private channel that ended up at **index 0** on a board can never uplink or
   downlink there: the primary channel is deliberately never relayed
-  (`docs/firmware-config.md` §7).
+  (`docs/firmware-config.md` §7). A message sent on it therefore leaves no trace
+  in `raw_frames` at all.
+- **A frame that is nowhere in `raw_frames` was never published on an uplinked
+  channel.** A gateway uplinks its *own* packets unconditionally (§16), so for a
+  gateway's own message there is no third possibility: either it went out on a
+  channel that is not uplinked, or it was never sent.
+- Group by **`from_node`**, not `board_id`: `board_id` is the gateway that
+  published the frame, so a whole site's traffic carries the same one
+  (`docs/storage-schema.md` §1).
 - Frames published while a board held no connection are lost to it and counted in
   `downlink_missed_total`; QoS 0 with `cleanSession` leaves nothing to replay.
   A low-rate channel can be missed entirely this way.

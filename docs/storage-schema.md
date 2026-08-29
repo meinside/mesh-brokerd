@@ -15,14 +15,18 @@ CREATE TABLE raw_frames (
     received_at     TEXT    NOT NULL,   -- RFC 3339 UTC, e.g. 2025-01-01T00:00:00Z
     topic           TEXT    NOT NULL,   -- full MQTT topic as received
     mqtt_username   TEXT    NOT NULL,   -- the publishing account, e.g. alpha
-    board_id        TEXT    NOT NULL,   -- free-form string derived from mqtt_username,
+    board_id        TEXT    NOT NULL,   -- the *gateway* that published this frame,
+                                         -- never the sender: a free-form string
+                                         -- derived from mqtt_username,
                                          -- never an enum (docs/architecture.md §10.1)
     channel_segment TEXT    NOT NULL,   -- topic's {channel} segment, verbatim —
                                          -- opaque text; never parsed further
     node_segment    TEXT,               -- topic's {node} segment, verbatim, opaque
     gateway_id      TEXT,               -- ServiceEnvelope.gateway_id, "!hex" form
     packet_id       INTEGER,            -- MeshPacket.id
-    from_node       INTEGER,            -- MeshPacket.from, if parseable
+    from_node       INTEGER,            -- MeshPacket.from, if parseable -- the sender,
+                                         -- which is board_id only when a gateway
+                                         -- originated the packet itself
     to_node         INTEGER,            -- MeshPacket.to, if parseable
     payload         BLOB    NOT NULL,   -- the raw MQTT payload bytes, unmodified
     decode_status   TEXT    NOT NULL,   -- see status values below
